@@ -153,6 +153,7 @@
   <script>
     const params = new URLSearchParams(window.location.search);
     const appUrl = String(params.get('app') || '').trim();
+    const autoStart = String(params.get('autostart') || '') === '1';
 
     const startButton = document.getElementById('startButton');
     const stopButton = document.getElementById('stopButton');
@@ -313,6 +314,14 @@
     }
 
     startButton.addEventListener('click', startCamera);
+
+    document.addEventListener('DOMContentLoaded', function () {
+      if (autoStart) {
+        window.setTimeout(function () {
+          startCamera();
+        }, 350);
+      }
+    });
     stopButton.addEventListener('click', async function () {
       await stopCamera();
       setStatus('カメラを停止しました。');
