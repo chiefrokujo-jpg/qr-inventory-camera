@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1a73e8">
+  <title>QR棚卸カメラ</title>
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: #f4f6f8;
+      color: #202124;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif;
+    }
+
+    main {
+      width: 100%;
+      max-width: 560px;
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: 16px;
+      background: #fff;
+    }
+
+    h1 {
+      margin: 8px 0 6px;
+      text-align: center;
+      font-size: 26px;
+    }
+
+    .subtitle {
+      margin: 0 0 16px;
+      text-align: center;
+      color: #5f6368;
+      font-size: 15px;
+    }
+
+    .card {
+      margin-bottom: 16px;
+      padding: 16px;
+      border: 1px solid #dadce0;
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, .06);
+    }
+
+    #reader {
+      overflow: hidden;
+      width: 100%;
+      min-height: 280px;
+      border-radius: 12px;
+      background: #111;
+    }
+
+    button, a.action {
+      display: block;
+      width: 100%;
+      min-height: 56px;
+      margin-top: 12px;
+      padding: 14px;
+      border: 0;
+      border-radius: 10px;
+      background: #1a73e8;
+      color: #fff;
+      font-size: 18px;
+      font-weight: 700;
+      text-align: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    button.secondary, a.secondary { background: #5f6368; }
+    button:disabled { background: #aab2bb; cursor: not-allowed; }
+
+    .status {
+      margin-top: 12px;
+      padding: 13px;
+      border-radius: 10px;
+      background: #eef4ff;
+      font-size: 16px;
+      font-weight: 700;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .status.success { background: #e6f4ea; color: #137333; }
+    .status.error { background: #fce8e6; color: #b3261e; }
+
+    .result {
+      display: none;
+      margin-top: 14px;
+      padding: 16px;
+      border: 2px solid #34a853;
+      border-radius: 12px;
+      background: #e6f4ea;
+    }
+
+    .result-label {
+      margin-bottom: 6px;
+      color: #137333;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .result-value {
+      overflow-wrap: anywhere;
+      font-size: 24px;
+      font-weight: 800;
+    }
+
+    .note {
+      margin: 10px 0 0;
+      color: #5f6368;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>QR棚卸カメラ</h1>
+    <p class="subtitle">商品のQRコードを枠内に映してください</p>
+
+    <section class="card">
+      <div id="reader"></div>
+
+      <button id="startButton" type="button">カメラを起動する</button>
+      <button id="stopButton" class="secondary hidden" type="button">カメラを停止する</button>
+
+      <div id="status" class="status">
+        「カメラを起動する」を押してください。
+      </div>
+
+      <div id="result" class="result">
+        <div class="result-label">読み取り結果</div>
+        <div id="resultValue" class="result-value"></div>
+      </div>
+
+      <a id="returnButton" class="action hidden" href="#">棚卸画面で商品を開く</a>
+
+      <p class="note">
+        初回のみカメラの使用許可が表示されます。「許可」を選んでください。
+        背面カメラを優先して起動します。
+      </p>
+    </section>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const appUrl = String(params.get('app') || '').trim();
+
+    const startButton = document.getElementById('startButton');
+    const stopButton = document.getElementById('stopButton');
+    const statusBox = document.getElementById('status');
+    const resultBox = document.getElementById('result');
+    const resultValue = document.getElementById('resultValue');
+    const returnButton = document.getElementById('returnButton');
+
+    let scanner = null;
+    let isRunning = false;
+    let scanCompleted = false;
+
+    function setStatus(message, type = '') {
+      statusBox.textContent = message;
+      statusBox.className = 'status' + (type ? ' ' + type : '');
+    }
+
+    function buildReturnUrl(qrText) {
+      if (!appUrl) return '';
+      const separator = appUrl.includes('?') ? '&' : '?';
+      return appUrl
+        + separator
+        + 'qr=' + encodeURIComponent(qrText)
+        + '&camera=1';
+    }
+
+    function isValidQrId(value) {
+      return /^[A-Z0-9]+-\d+$/.test(value);
+    }
+
+    async function startCamera() {
+      if (isRunning) return;
+
+      scanCompleted = false;
+      resultBox.style.display = 'none';
+      returnButton.classList.add('hidden');
+      startButton.disabled = true;
+      setStatus('カメラを起動しています……');
+
+      try {
+        scanner = new Html5Qrcode(
+          'reader',
+          { formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE] }
+        );
+
+        const qrboxSize = Math.min(
+          Math.max(Math.floor(window.innerWidth * 0.68), 220),
+          320
+        );
+
+        await scanner.start(
+          { facingMode: 'environment' },
+          {
+            fps: 10,
+            qrbox: { width: qrboxSize, height: qrboxSize },
+            aspectRatio: 1.0,
+            disableFlip: false
+          },
+          handleScanSuccess,
+          function () {
+            // 読み取り失敗は連続発生するため表示しません。
+          }
+        );
+
+        isRunning = true;
+        startButton.classList.add('hidden');
+        stopButton.classList.remove('hidden');
+        setStatus('読み取り中です。QRコードを枠内に映してください。');
+      } catch (error) {
+        startButton.disabled = false;
+        startButton.classList.remove('hidden');
+        stopButton.classList.add('hidden');
+        setStatus(
+          cameraErrorMessage(error),
+          'error'
+        );
+      }
+    }
+
+    async function stopCamera() {
+      if (!scanner || !isRunning) return;
+
+      try {
+        await scanner.stop();
+        await scanner.clear();
+      } catch (error) {
+        console.warn(error);
+      } finally {
+        isRunning = false;
+        startButton.disabled = false;
+        startButton.classList.remove('hidden');
+        stopButton.classList.add('hidden');
+      }
+    }
+
+    async function handleScanSuccess(decodedText) {
+      if (scanCompleted) return;
+
+      const qrText = String(decodedText || '').trim().toUpperCase();
+
+      if (!isValidQrId(qrText)) {
+        setStatus(
+          '棚卸用ではないQRコードです。\n読み取り結果：' + qrText,
+          'error'
+        );
+        return;
+      }
+
+      scanCompleted = true;
+
+      if (navigator.vibrate) {
+        navigator.vibrate(120);
+      }
+
+      await stopCamera();
+
+      resultValue.textContent = qrText;
+      resultBox.style.display = 'block';
+      setStatus('QRコードを読み取りました。', 'success');
+
+      const destination = buildReturnUrl(qrText);
+
+      if (destination) {
+        returnButton.href = destination;
+        returnButton.classList.remove('hidden');
+        setStatus(
+          'QRコードを読み取りました。\n棚卸画面へ移動します。',
+          'success'
+        );
+        window.setTimeout(function () {
+          window.location.replace(destination);
+        }, 700);
+      } else {
+        setStatus(
+          'QRコードを読み取りました。\n現在は単体テストのため、棚卸画面へは移動しません。',
+          'success'
+        );
+      }
+    }
+
+    function cameraErrorMessage(error) {
+      const name = error && error.name ? error.name : '';
+      const message = error && error.message ? error.message : '';
+
+      if (name === 'NotAllowedError' || /permission|denied/i.test(message)) {
+        return 'カメラの使用が許可されていません。\nブラウザのサイト設定からカメラを許可してください。';
+      }
+
+      if (name === 'NotFoundError' || /not found|no camera/i.test(message)) {
+        return '利用できるカメラが見つかりませんでした。';
+      }
+
+      if (name === 'NotReadableError') {
+        return 'ほかのアプリがカメラを使用している可能性があります。\nほかのカメラアプリを閉じて再度お試しください。';
+      }
+
+      return 'カメラを起動できませんでした。\n' + (message || 'ブラウザとカメラ権限を確認してください。');
+    }
+
+    startButton.addEventListener('click', startCamera);
+    stopButton.addEventListener('click', async function () {
+      await stopCamera();
+      setStatus('カメラを停止しました。');
+    });
+
+    window.addEventListener('pagehide', function () {
+      if (scanner && isRunning) {
+        scanner.stop().catch(function () {});
+      }
+    });
+  </script>
+</body>
+</html>
