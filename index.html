@@ -66,10 +66,16 @@
     if(completed)return;
     const qr=String(decoded||'').trim().toUpperCase();
     if(!validQr(qr)){status('棚卸用QRの形式ではありません。\n読み取り値：'+qr,'bad');return}
-    completed=true;if(navigator.vibrate)navigator.vibrate(120);await stop();
+    completed=true;
+    if(navigator.vibrate)navigator.vibrate(120);
+    /* 結果表示を先に出し、カメラの停止（stop()は内部でエラーを握りつぶすため待つ必要がない）は
+       完了を待たずに開始する。棚卸画面への遷移自体がページを破棄するため、カメラは
+       ブラウザ側でも解放される。以前はstop()の完了待ち＋650ms固定待機の合計時間だけ
+       次のQR認識可能になるまでの復帰が遅れていた。 */
     resultBox.textContent=qr;resultBox.style.display='block';status('QRコードを読み取りました。','ok');
+    stop();
     const url=destination(qr);
-    if(url){returnButton.href=url;returnButton.classList.remove('hidden');setTimeout(function(){location.replace(url)},650)}
+    if(url){returnButton.href=url;returnButton.classList.remove('hidden');setTimeout(function(){location.replace(url)},180)}
   }
 
   function cameraError(error){
@@ -83,7 +89,10 @@
   startButton.addEventListener('click',start);
   stopButton.addEventListener('click',async function(){await stop();status('カメラを停止しました。')});
   addEventListener('pagehide',function(){if(scanner&&running)scanner.stop().catch(function(){})});
-  if(autoStart)setTimeout(start,350);
+  /* 固定350ms待機の代わりに、二重requestAnimationFrameで「最初の描画が済んだ直後」を
+     待ってから起動する（画面がまだ描画されていない状態でのカメラ起動を避ける目的は
+     維持しつつ、実際に必要な時間だけ待つ）。 */
+  if(autoStart)requestAnimationFrame(function(){requestAnimationFrame(start)});
 </script>
 </body>
 </html>
