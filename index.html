@@ -4,12 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#1769aa">
-  <!-- 調査中の不具合修正を確実に反映させるため、ブラウザ側でのHTMLキャッシュ保持を抑制する
-       （GitHub PagesはCache-Control: max-age=600を返すため、Safari等が最大10分古い版を
-       表示し続けることがあった）。 -->
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
   <title>QR棚卸カメラ</title>
   <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
@@ -39,7 +33,6 @@
   const params = new URLSearchParams(location.search);
   const appUrl = String(params.get('app') || '').trim();
   const autoStart = String(params.get('autostart') || '') === '1';
-  const debugMode = String(params.get('debug') || '') === '1';
   const startButton = document.getElementById('startButton');
   const stopButton = document.getElementById('stopButton');
   const statusBox = document.getElementById('status');
@@ -49,159 +42,48 @@
   let running = false;
   let completed = false;
 
-  /* 一時診断: debug=1が実際に認識されているか、かつ今読み込まれているのが最新版の
-     コードかを、カメラ操作の前に即座に確認できるようにする（調査完了後に削除予定）。
-     BUILD_IDは反映確認のためだけの目印で、業務上の意味は持たない。 */
-  const BUILD_ID='diag-2026-08-14-03';
-  if(debugMode&&statusBox){
-    statusBox.textContent='[DEBUG MODE ACTIVE] build='+BUILD_ID+'\n'+statusBox.textContent;
-  }
-
   function status(text, type){statusBox.textContent=text;statusBox.className='status'+(type?' '+type:'')}
   function validQr(value){return /^[A-Z0-9][A-Z0-9-]{4,79}$/.test(value)}
   function destination(qr){if(!appUrl)return '';return appUrl+(appUrl.includes('?')?'&':'?')+'qr='+encodeURIComponent(qr)+'&camera=1'}
 
-  /* --- 一時診断コード（原因調査用。恒久仕様ではなく、調査完了後に削除予定） ---
-     実機（特にiPhone Safari）でしか再現しない起動失敗の原因を特定するため、
-     失敗時にconsole.warnへ詳細情報を出力する。debug=1が付与された場合のみ、
-     同じ内容を画面のステータス欄（既存要素）にも表示する。新しい画面・ボタンは追加しない。 */
-  function errInfo(error){return {typeofError:typeof error,str:String(error),name:error&&error.name,message:error&&error.message,stack:error&&error.stack}}
-  async function probeDirectGetUserMedia(){
-    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)return{ok:false,reason:'mediaDevices.getUserMedia not available'};
-    try{
-      const s=await navigator.mediaDevices.getUserMedia({video:true});
-      s.getTracks().forEach(function(t){t.stop()});
-      return{ok:true};
-    }catch(e){return{ok:false,error:errInfo(e)}}
-  }
-  function diagSnapshot(extra){
-    let scannerState;
-    try{scannerState=scanner&&typeof scanner.getState==='function'?scanner.getState():undefined}catch(e){scannerState='error:'+e}
-    return Object.assign({
-      userAgent:navigator.userAgent,
-      secureContext:window.isSecureContext,
-      hasMediaDevices:!!navigator.mediaDevices,
-      hasGetUserMedia:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia),
-      visibilityState:document.visibilityState,
-      hasFocus:document.hasFocus(),
-      url:location.href,
-      running:running,
-      completed:completed,
-      hasScanner:!!scanner,
-      scannerState:scannerState,
-      videoElementExists:!!document.querySelector('#reader video')
-    },extra||{});
-  }
-  /* 「1回目は成功、2回目のカメラページだけ失敗する」事象を調査するため、ページをまたいで
-     比較できるよう、sessionStorageへ直近の出来事を記録する（同一タブ内でのみ保持され、
-     タブを閉じれば消える。個人情報やQR内容は保存しない）。 */
-  const DIAG_KEY='__qrCameraDiag';
-  function loadDiagHistory(){try{return JSON.parse(sessionStorage.getItem(DIAG_KEY)||'[]')}catch(e){return[]}}
-  function pushDiagEntry(entry){
-    try{
-      const hist=loadDiagHistory();
-      hist.push(Object.assign({t:new Date().toISOString()},entry));
-      while(hist.length>8)hist.shift();
-      sessionStorage.setItem(DIAG_KEY,JSON.stringify(hist));
-    }catch(e){}
-  }
-  /* --- 一時診断コードここまで --- */
-
-  async function start(viaGesture){
+  async function start(){
     if(running)return; completed=false; resultBox.style.display='none'; returnButton.classList.add('hidden'); startButton.disabled=true; status('カメラを起動しています……');
     try{
       scanner=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE]});
       const size=Math.min(Math.max(Math.floor(innerWidth*.68),220),330);
       await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:size,height:size},aspectRatio:1},success,function(){});
       running=true; startButton.classList.add('hidden'); stopButton.classList.remove('hidden'); status('読み取り中です。QRコードを枠内に映してください。');
-      pushDiagEntry({event:'start-success',viaGesture:!!viaGesture,url:location.href,visibilityState:document.visibilityState,hasFocus:document.hasFocus()});
-    }catch(error){
-      startButton.disabled=false;startButton.classList.remove('hidden');
-      let msg=cameraError(error,viaGesture);
-      /* 一時診断: html5-qrcode経由の起動失敗と、navigator.mediaDevices.getUserMedia()を
-         直接呼んだ場合の結果を比較し、失敗箇所を切り分ける。あわせて、直前の出来事の
-         履歴（前回ページでの成功/失敗・stop完了・pageshow等）も一緒に確認できるようにする。
-         利用者向けメッセージ(msg)の表示は診断処理の成否に関わらず必ず行う。 */
-      try{
-        const priorHistory=loadDiagHistory();
-        const directProbe=await probeDirectGetUserMedia();
-        const diag=diagSnapshot({buildId:BUILD_ID,viaGesture:!!viaGesture,html5QrcodeError:errInfo(error),directGetUserMediaProbe:directProbe,history:priorHistory});
-        console.warn('[camera] start failed',diag);
-        pushDiagEntry({event:'start-failure',viaGesture:!!viaGesture,url:location.href,errorName:error&&error.name,errorText:String(error)});
-        if(debugMode)msg+='\n\n[debug] build='+BUILD_ID+'\n'+JSON.stringify(diag,null,1);
-      }catch(diagError){
-        console.warn('[camera] diagnostic collection failed',diagError);
-        if(debugMode)msg+='\n\n[debug] build='+BUILD_ID+' 診断情報の収集に失敗: '+String(diagError);
-      }
-      status(msg,'bad');
-    }
+    }catch(error){startButton.disabled=false;startButton.classList.remove('hidden');status(cameraError(error),'bad')}
   }
 
   async function stop(){
     if(!scanner||!running)return;
     try{await scanner.stop();await scanner.clear()}catch(error){console.warn(error)}
     running=false;startButton.disabled=false;startButton.classList.remove('hidden');stopButton.classList.add('hidden');
-    pushDiagEntry({event:'stop-complete',url:location.href});
   }
 
   async function success(decoded){
     if(completed)return;
     const qr=String(decoded||'').trim().toUpperCase();
     if(!validQr(qr)){status('棚卸用QRの形式ではありません。\n読み取り値：'+qr,'bad');return}
-    completed=true;
-    if(navigator.vibrate)navigator.vibrate(120);
+    completed=true;if(navigator.vibrate)navigator.vibrate(120);await stop();
     resultBox.textContent=qr;resultBox.style.display='block';status('QRコードを読み取りました。','ok');
-    pushDiagEntry({event:'qr-detected',url:location.href});
     const url=destination(qr);
-    if(url){returnButton.href=url;returnButton.classList.remove('hidden')}
-    /* stop()の完了（カメラの解放）を待たずに遷移すると、遷移先で次のQRを読み取る際に
-       カメラハードウェアがまだ解放されておらず起動に失敗することがあるため、
-       stop()の完了は必ず待つ。表示用の180ms待機はその後に行い、
-       カメラ解放待ちの時間で代用しない。 */
-    await stop();
-    if(url)setTimeout(function(){location.replace(url)},180);
+    if(url){returnButton.href=url;returnButton.classList.remove('hidden');setTimeout(function(){location.replace(url)},650)}
   }
 
-  function cameraError(error,viaGesture){
-    /* html5-qrcodeはgetUserMedia失敗時、Errorオブジェクトではなく
-       "Error getting userMedia, error = NotReadableError: ..." のような文字列で
-       rejectすることがあるため、error.name/error.messageだけでなく
-       文字列化した内容全体から実際の例外種別を判定する。 */
-    const text=String((error&&(error.message||error.name))||error||'');
-    if(/notallowederror|permission|denied/i.test(text)){
-      /* Safariは、サイトのカメラ許可が「許可」済みでも、利用者の直接操作（タップ等）を
-         伴わない自動起動（autostart）からのgetUserMedia呼び出しをNotAllowedErrorとして
-         拒否する仕様を持つ（許可設定の問題ではない）。自動起動時の失敗はその旨を案内し、
-         利用者の操作で起動した場合は通常どおり権限設定の確認を案内する。 */
-      if(viaGesture===false)return 'カメラを自動起動できませんでした。下の「カメラを起動する」を押してください。';
-      return 'カメラが許可されていません。ブラウザのサイト設定で許可してください。';
-    }
-    if(/notfounderror|not found|no camera/i.test(text))return '利用できるカメラが見つかりません。';
-    if(/notreadableerror|could not start video source/i.test(text))return 'ほかのアプリや画面がカメラを使用している可能性があります。少し待ってからもう一度お試しください。';
-    if(/aborterror/i.test(text))return 'カメラの起動が中断されました。もう一度お試しください。';
-    if(/overconstrainederror/i.test(text))return 'この端末のカメラに対応していない設定です。';
-    return 'カメラを起動できませんでした。\n'+(text||'ブラウザと権限を確認してください。');
+  function cameraError(error){
+    const name=error&&error.name||'',message=error&&error.message||'';
+    if(name==='NotAllowedError'||/permission|denied/i.test(message))return 'カメラが許可されていません。ブラウザのサイト設定で許可してください。';
+    if(name==='NotFoundError'||/not found|no camera/i.test(message))return '利用できるカメラが見つかりません。';
+    if(name==='NotReadableError')return 'ほかのアプリがカメラを使用している可能性があります。';
+    return 'カメラを起動できませんでした。\n'+(message||'ブラウザと権限を確認してください。');
   }
 
-  startButton.addEventListener('click',function(){start(true)});
+  startButton.addEventListener('click',start);
   stopButton.addEventListener('click',async function(){await stop();status('カメラを停止しました。')});
   addEventListener('pagehide',function(){if(scanner&&running)scanner.stop().catch(function(){})});
-  /* 一時診断+対策: 「1回目は成功するが2回目のカメラページだけ失敗する」事象の最有力仮説として、
-     Safariが2回目のページ表示をbfcache（ページキャッシュ）から復元し、autostart等の
-     初期化スクリプトが再実行されない状態が疑われる。event.persisted===trueはbfcache復元を
-     示すため、その場合は状態が不確実なページをそのまま使わず、確実に初期化し直すために
-     強制的に読み込み直す（同じURLへの再読み込みのため、autostartは正しく再実行される）。 */
-  addEventListener('pageshow',function(event){
-    pushDiagEntry({event:'pageshow',persisted:!!event.persisted,url:location.href,visibilityState:document.visibilityState,hasFocus:document.hasFocus()});
-    if(event.persisted){
-      console.warn('[camera] page restored from bfcache, forcing reload');
-      location.reload();
-    }
-  });
-  /* 固定350ms待機の代わりに、二重requestAnimationFrameで「最初の描画が済んだ直後」を
-     待ってから起動する（画面がまだ描画されていない状態でのカメラ起動を避ける目的は
-     維持しつつ、実際に必要な時間だけ待つ）。 */
-  if(autoStart)requestAnimationFrame(function(){requestAnimationFrame(function(){start(false)})});
+  if(autoStart)setTimeout(start,350);
 </script>
 </body>
 </html>
