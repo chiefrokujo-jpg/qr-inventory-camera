@@ -33,6 +33,7 @@
   const params = new URLSearchParams(location.search);
   const appUrl = String(params.get('app') || '').trim();
   const autoStart = String(params.get('autostart') || '') === '1';
+  const debugMode = String(params.get('debug') || '') === '1';
   const startButton = document.getElementById('startButton');
   const stopButton = document.getElementById('stopButton');
   const statusBox = document.getElementById('status');
@@ -46,6 +47,39 @@
   function validQr(value){return /^[A-Z0-9][A-Z0-9-]{4,79}$/.test(value)}
   function destination(qr){if(!appUrl)return '';return appUrl+(appUrl.includes('?')?'&':'?')+'qr='+encodeURIComponent(qr)+'&camera=1'}
 
+  /* --- 一時診断コード（原因調査用。恒久仕様ではなく、調査完了後に削除予定） ---
+     実機（特にiPhone Safari）でしか再現しない起動失敗の原因を特定するため、
+     失敗時にconsole.warnへ詳細情報を出力する。debug=1が付与された場合のみ、
+     同じ内容を画面のステータス欄（既存要素）にも表示する。新しい画面・ボタンは追加しない。 */
+  function errInfo(error){return {typeofError:typeof error,str:String(error),name:error&&error.name,message:error&&error.message,stack:error&&error.stack}}
+  async function probeDirectGetUserMedia(){
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)return{ok:false,reason:'mediaDevices.getUserMedia not available'};
+    try{
+      const s=await navigator.mediaDevices.getUserMedia({video:true});
+      s.getTracks().forEach(function(t){t.stop()});
+      return{ok:true};
+    }catch(e){return{ok:false,error:errInfo(e)}}
+  }
+  function diagSnapshot(extra){
+    let scannerState;
+    try{scannerState=scanner&&typeof scanner.getState==='function'?scanner.getState():undefined}catch(e){scannerState='error:'+e}
+    return Object.assign({
+      userAgent:navigator.userAgent,
+      secureContext:window.isSecureContext,
+      hasMediaDevices:!!navigator.mediaDevices,
+      hasGetUserMedia:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia),
+      visibilityState:document.visibilityState,
+      hasFocus:document.hasFocus(),
+      url:location.href,
+      running:running,
+      completed:completed,
+      hasScanner:!!scanner,
+      scannerState:scannerState,
+      videoElementExists:!!document.querySelector('#reader video')
+    },extra||{});
+  }
+  /* --- 一時診断コードここまで --- */
+
   async function start(viaGesture){
     if(running)return; completed=false; resultBox.style.display='none'; returnButton.classList.add('hidden'); startButton.disabled=true; status('カメラを起動しています……');
     try{
@@ -55,8 +89,14 @@
       running=true; startButton.classList.add('hidden'); stopButton.classList.remove('hidden'); status('読み取り中です。QRコードを枠内に映してください。');
     }catch(error){
       startButton.disabled=false;startButton.classList.remove('hidden');
-      console.warn('[camera] start failed',{viaGesture:!!viaGesture,name:error&&error.name,message:error&&error.message,raw:String(error),visibility:document.visibilityState,secureContext:window.isSecureContext,hasMediaDevices:!!navigator.mediaDevices,url:location.href});
-      status(cameraError(error,viaGesture),'bad');
+      /* 一時診断: html5-qrcode経由の起動失敗と、navigator.mediaDevices.getUserMedia()を
+         直接呼んだ場合の結果を比較し、失敗箇所を切り分ける。 */
+      const directProbe=await probeDirectGetUserMedia();
+      const diag=diagSnapshot({viaGesture:!!viaGesture,html5QrcodeError:errInfo(error),directGetUserMediaProbe:directProbe});
+      console.warn('[camera] start failed',diag);
+      let msg=cameraError(error,viaGesture);
+      if(debugMode)msg+='\n\n[debug]\n'+JSON.stringify(diag,null,1);
+      status(msg,'bad');
     }
   }
 
