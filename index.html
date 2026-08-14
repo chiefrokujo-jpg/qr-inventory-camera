@@ -12,13 +12,14 @@
     .card{padding:16px;border:1px solid #d4dee6;border-radius:14px;box-shadow:0 2px 8px rgba(20,45,65,.06)}
     #reader{overflow:hidden;width:100%;min-height:280px;border-radius:12px;background:#111}
     button,a.button{display:flex;align-items:center;justify-content:center;width:100%;min-height:56px;margin-top:12px;padding:12px;border:0;border-radius:10px;background:#1769aa;color:#fff;font-size:18px;font-weight:800;text-decoration:none;cursor:pointer}
-    button.secondary{background:#5e6e79}.status{margin-top:12px;padding:13px;border-radius:9px;background:#e8f1fb;font-weight:800;white-space:pre-wrap}.status.ok{background:#e6f4ea;color:#137333}.status.bad{background:#fce8e6;color:#b3261e}.hidden{display:none!important}.result{display:none;margin-top:12px;padding:14px;border:2px solid #34a853;border-radius:10px;background:#e6f4ea;font-size:22px;font-weight:900;overflow-wrap:anywhere}.note{color:#62717b;font-size:14px;line-height:1.6}
+    button.secondary,a.secondary{background:#5e6e79}.status{margin-top:12px;padding:13px;border-radius:9px;background:#e8f1fb;font-weight:800;white-space:pre-wrap}.status.ok{background:#e6f4ea;color:#137333}.status.bad{background:#fce8e6;color:#b3261e}.hidden{display:none!important}.result{display:none;margin-top:12px;padding:14px;border:2px solid #34a853;border-radius:10px;background:#e6f4ea;font-size:22px;font-weight:900;overflow-wrap:anywhere}.note{color:#62717b;font-size:14px;line-height:1.6}
   </style>
 </head>
 <body>
 <main>
   <h1>QR棚卸カメラ</h1>
   <p class="subtitle">商品のQRコードを枠内に映してください</p>
+  <a id="backButton" class="button secondary hidden" href="#">← 前の画面に戻る</a>
   <section class="card">
     <div id="reader"></div>
     <button id="startButton" type="button">カメラを起動する</button>
@@ -38,6 +39,7 @@
   const statusBox = document.getElementById('status');
   const resultBox = document.getElementById('result');
   const returnButton = document.getElementById('returnButton');
+  const backButton = document.getElementById('backButton');
   let scanner = null;
   let running = false;
   let completed = false;
@@ -83,6 +85,21 @@
   startButton.addEventListener('click',start);
   stopButton.addEventListener('click',async function(){await stop();status('カメラを停止しました。')});
   addEventListener('pagehide',function(){if(scanner&&running)scanner.stop().catch(function(){})});
+  /* 「前の画面に戻る」：戻り先（appパラメータ）がある場合だけ表示する。QRを読み取らずに
+     利用者が明示的にタップした場合だけ戻る（自動では戻らない）。カメラが起動中の場合は、
+     QR読取成功時のsuccess()と同じ順序（await stop()でカメラ解放を待ってから遷移）で
+     安全に停止してから戻る。次回このページを開いたときにカメラが使用中のまま
+     残らないようにするため。 */
+  if(appUrl){
+    backButton.href=appUrl;
+    backButton.classList.remove('hidden');
+    backButton.addEventListener('click',async function(event){
+      event.preventDefault();
+      if(completed)return;
+      await stop();
+      location.replace(appUrl);
+    });
+  }
   if(autoStart)setTimeout(start,350);
 </script>
 </body>
