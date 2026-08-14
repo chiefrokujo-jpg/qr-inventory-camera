@@ -4,6 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#1769aa">
+  <!-- 調査中の不具合修正を確実に反映させるため、ブラウザ側でのHTMLキャッシュ保持を抑制する
+       （GitHub PagesはCache-Control: max-age=600を返すため、Safari等が最大10分古い版を
+       表示し続けることがあった）。 -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>QR棚卸カメラ</title>
   <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <style>
@@ -42,6 +48,14 @@
   let scanner = null;
   let running = false;
   let completed = false;
+
+  /* 一時診断: debug=1が実際に認識されているか、かつ今読み込まれているのが最新版の
+     コードかを、カメラ操作の前に即座に確認できるようにする（調査完了後に削除予定）。
+     BUILD_IDは反映確認のためだけの目印で、業務上の意味は持たない。 */
+  const BUILD_ID='diag-2026-08-14-03';
+  if(debugMode&&statusBox){
+    statusBox.textContent='[DEBUG MODE ACTIVE] build='+BUILD_ID+'\n'+statusBox.textContent;
+  }
 
   function status(text, type){statusBox.textContent=text;statusBox.className='status'+(type?' '+type:'')}
   function validQr(value){return /^[A-Z0-9][A-Z0-9-]{4,79}$/.test(value)}
@@ -103,16 +117,22 @@
       pushDiagEntry({event:'start-success',viaGesture:!!viaGesture,url:location.href,visibilityState:document.visibilityState,hasFocus:document.hasFocus()});
     }catch(error){
       startButton.disabled=false;startButton.classList.remove('hidden');
+      let msg=cameraError(error,viaGesture);
       /* 一時診断: html5-qrcode経由の起動失敗と、navigator.mediaDevices.getUserMedia()を
          直接呼んだ場合の結果を比較し、失敗箇所を切り分ける。あわせて、直前の出来事の
-         履歴（前回ページでの成功/失敗・stop完了・pageshow等）も一緒に確認できるようにする。 */
-      const priorHistory=loadDiagHistory();
-      const directProbe=await probeDirectGetUserMedia();
-      const diag=diagSnapshot({viaGesture:!!viaGesture,html5QrcodeError:errInfo(error),directGetUserMediaProbe:directProbe,history:priorHistory});
-      console.warn('[camera] start failed',diag);
-      pushDiagEntry({event:'start-failure',viaGesture:!!viaGesture,url:location.href,errorName:error&&error.name,errorText:String(error)});
-      let msg=cameraError(error,viaGesture);
-      if(debugMode)msg+='\n\n[debug]\n'+JSON.stringify(diag,null,1);
+         履歴（前回ページでの成功/失敗・stop完了・pageshow等）も一緒に確認できるようにする。
+         利用者向けメッセージ(msg)の表示は診断処理の成否に関わらず必ず行う。 */
+      try{
+        const priorHistory=loadDiagHistory();
+        const directProbe=await probeDirectGetUserMedia();
+        const diag=diagSnapshot({buildId:BUILD_ID,viaGesture:!!viaGesture,html5QrcodeError:errInfo(error),directGetUserMediaProbe:directProbe,history:priorHistory});
+        console.warn('[camera] start failed',diag);
+        pushDiagEntry({event:'start-failure',viaGesture:!!viaGesture,url:location.href,errorName:error&&error.name,errorText:String(error)});
+        if(debugMode)msg+='\n\n[debug] build='+BUILD_ID+'\n'+JSON.stringify(diag,null,1);
+      }catch(diagError){
+        console.warn('[camera] diagnostic collection failed',diagError);
+        if(debugMode)msg+='\n\n[debug] build='+BUILD_ID+' 診断情報の収集に失敗: '+String(diagError);
+      }
       status(msg,'bad');
     }
   }
