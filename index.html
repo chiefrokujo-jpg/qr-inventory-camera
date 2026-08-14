@@ -46,14 +46,18 @@
   function validQr(value){return /^[A-Z0-9][A-Z0-9-]{4,79}$/.test(value)}
   function destination(qr){if(!appUrl)return '';return appUrl+(appUrl.includes('?')?'&':'?')+'qr='+encodeURIComponent(qr)+'&camera=1'}
 
-  async function start(){
+  async function start(viaGesture){
     if(running)return; completed=false; resultBox.style.display='none'; returnButton.classList.add('hidden'); startButton.disabled=true; status('カメラを起動しています……');
     try{
       scanner=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE]});
       const size=Math.min(Math.max(Math.floor(innerWidth*.68),220),330);
       await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:size,height:size},aspectRatio:1},success,function(){});
       running=true; startButton.classList.add('hidden'); stopButton.classList.remove('hidden'); status('読み取り中です。QRコードを枠内に映してください。');
-    }catch(error){startButton.disabled=false;startButton.classList.remove('hidden');status(cameraError(error),'bad')}
+    }catch(error){
+      startButton.disabled=false;startButton.classList.remove('hidden');
+      console.warn('[camera] start failed',{viaGesture:!!viaGesture,name:error&&error.name,message:error&&error.message,raw:String(error),visibility:document.visibilityState,secureContext:window.isSecureContext,hasMediaDevices:!!navigator.mediaDevices,url:location.href});
+      status(cameraError(error,viaGesture),'bad');
+    }
   }
 
   async function stop(){
@@ -79,13 +83,20 @@
     if(url)setTimeout(function(){location.replace(url)},180);
   }
 
-  function cameraError(error){
+  function cameraError(error,viaGesture){
     /* html5-qrcodeはgetUserMedia失敗時、Errorオブジェクトではなく
        "Error getting userMedia, error = NotReadableError: ..." のような文字列で
        rejectすることがあるため、error.name/error.messageだけでなく
        文字列化した内容全体から実際の例外種別を判定する。 */
     const text=String((error&&(error.message||error.name))||error||'');
-    if(/notallowederror|permission|denied/i.test(text))return 'カメラが許可されていません。ブラウザのサイト設定で許可してください。';
+    if(/notallowederror|permission|denied/i.test(text)){
+      /* Safariは、サイトのカメラ許可が「許可」済みでも、利用者の直接操作（タップ等）を
+         伴わない自動起動（autostart）からのgetUserMedia呼び出しをNotAllowedErrorとして
+         拒否する仕様を持つ（許可設定の問題ではない）。自動起動時の失敗はその旨を案内し、
+         利用者の操作で起動した場合は通常どおり権限設定の確認を案内する。 */
+      if(viaGesture===false)return 'カメラを自動起動できませんでした。下の「カメラを起動する」を押してください。';
+      return 'カメラが許可されていません。ブラウザのサイト設定で許可してください。';
+    }
     if(/notfounderror|not found|no camera/i.test(text))return '利用できるカメラが見つかりません。';
     if(/notreadableerror|could not start video source/i.test(text))return 'ほかのアプリや画面がカメラを使用している可能性があります。少し待ってからもう一度お試しください。';
     if(/aborterror/i.test(text))return 'カメラの起動が中断されました。もう一度お試しください。';
@@ -93,13 +104,13 @@
     return 'カメラを起動できませんでした。\n'+(text||'ブラウザと権限を確認してください。');
   }
 
-  startButton.addEventListener('click',start);
+  startButton.addEventListener('click',function(){start(true)});
   stopButton.addEventListener('click',async function(){await stop();status('カメラを停止しました。')});
   addEventListener('pagehide',function(){if(scanner&&running)scanner.stop().catch(function(){})});
   /* 固定350ms待機の代わりに、二重requestAnimationFrameで「最初の描画が済んだ直後」を
      待ってから起動する（画面がまだ描画されていない状態でのカメラ起動を避ける目的は
      維持しつつ、実際に必要な時間だけ待つ）。 */
-  if(autoStart)requestAnimationFrame(function(){requestAnimationFrame(start)});
+  if(autoStart)requestAnimationFrame(function(){requestAnimationFrame(function(){start(false)})});
 </script>
 </body>
 </html>
