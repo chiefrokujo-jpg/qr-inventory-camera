@@ -47,6 +47,17 @@
   function status(text, type){statusBox.textContent=text;statusBox.className='status'+(type?' '+type:'')}
   function validQr(value){return /^[A-Z0-9][A-Z0-9-]{4,79}$/.test(value)}
   function destination(qr){if(!appUrl)return '';return appUrl+(appUrl.includes('?')?'&':'?')+'qr='+encodeURIComponent(qr)+'&camera=1'}
+  /* このカメラ画面がwindow.open/target="_blank"で開かれている場合、ページ全体の
+     再読込みを避けるため、まずwindow.openerへpostMessageでQR値だけを返す。
+     window.openerが無い（従来どおりの遷移で開かれた等）場合や送信に失敗した場合は、
+     falseを返し、呼び出し側が従来のlocation.replace方式へフォールバックする。 */
+  function sendQrToOpener(qr){
+    try{
+      if(!window.opener||window.opener.closed)return false;
+      window.opener.postMessage({source:'qr-inventory-camera',qr:qr},'*');
+      return true;
+    }catch(error){return false}
+  }
 
   async function start(){
     if(running)return; completed=false; resultBox.style.display='none'; returnButton.classList.add('hidden'); startButton.disabled=true; status('カメラを起動しています……');
@@ -71,7 +82,21 @@
     completed=true;if(navigator.vibrate)navigator.vibrate(120);await stop();
     resultBox.textContent=qr;resultBox.style.display='block';status('QRコードを読み取りました。','ok');
     const url=destination(qr);
-    if(url){returnButton.href=url;returnButton.classList.remove('hidden');setTimeout(function(){location.replace(url)},650)}
+    /* 戻るリンク（手動フォールバック）は、新方式・従来方式のどちらの場合でも
+       必ず表示しておく（postMessageが届かなかった場合等に利用者が自分で
+       タップして戻れるようにするため）。 */
+    if(url){returnButton.href=url;returnButton.classList.remove('hidden')}
+    if(sendQrToOpener(qr)){
+      status('QRコードを読み取りました。元の画面へ戻ります……','ok');
+      setTimeout(function(){
+        try{window.close()}catch(error){}
+        /* 何らかの理由でタブが閉じられない環境向けに、少し待ってから
+           従来方式（location.replace）へフォールバックする。 */
+        setTimeout(function(){if(url)location.replace(url)},600);
+      },150);
+      return;
+    }
+    if(url)setTimeout(function(){location.replace(url)},650);
   }
 
   function cameraError(error){
