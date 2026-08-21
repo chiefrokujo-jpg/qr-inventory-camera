@@ -93,15 +93,21 @@
        必ず表示しておく（postMessageが届かなかった場合等に利用者が自分で
        タップして戻れるようにするため）。 */
     if(url){returnButton.href=url;returnButton.classList.remove('hidden')}
-    /* この画面はタブを閉じず・遷移もせず、そのまま次回の読取に再利用する
-       （QR棚卸アプリ側が同じ名前付きタブへ次のリンクを開くことで前面に呼び戻す）。
-       以前はここでwindow.close()を試みていたが、target="_blank"等の実クリックで
-       開いたタブはスクリプトが開いたタブではないため閉じられず、閉じられない
-       場合のフォールバックとしてこのタブ自身をlocation.replaceしてしまい、
-       QR棚卸アプリのページがこのタブの中で丸ごと再読込みされる不具合の原因に
-       なっていた。新仕様ではpostMessage送信成功時は一切遷移しない。 */
+    /* QR棚卸アプリ側は毎回window.open()でこの画面を開く方式へ変更した
+       （2026-08-21）。window.open()で開かれたタブはスクリプト（このページ自身）が
+       window.close()で閉じることができ、閉じるとブラウザは自動的にopener
+       （QR棚卸アプリのタブ）へ前面を戻す。以前（タブを閉じず使い回す方式）は
+       window.focus()による前面復帰をQR棚卸アプリ側で試みたが、iPhone Safari／
+       Chromeで機能しなかったため、この「閉じることで戻す」方式へ変更した。
+       postMessage送信に失敗した場合（window.openerが無い等）だけ、従来どおり
+       location.replaceでこの画面自体を遷移させるフォールバックを維持する。
+       window.close()が何らかの理由で効かない場合は、close()を呼ばず待機画面の
+       まま残り、上のreturnButton（手動の戻るリンク）で復帰できる（自動で
+       location.replaceするフォールバックは行わない。過去にこの自動フォールバックが
+       原因でQR棚卸アプリ側の「画面が再読込みされる」不具合が起きたため）。 */
     if(sendQrToOpener(qr,makeScanId())){
-      status('QRコードを読み取りました。元の画面へ反映しました。\nこの画面はそのまま次の読み取りに使えます。','ok');
+      status('QRコードを読み取りました。元の画面へ反映しました。','ok');
+      setTimeout(function(){try{window.close()}catch(error){}},400);
       return;
     }
     if(url)setTimeout(function(){location.replace(url)},650);
