@@ -18,7 +18,7 @@
 <body>
 <main>
   <h1>QR棚卸カメラ</h1>
-  <p class="subtitle">商品のQRコードを枠内に映してください</p>
+  <p id="subtitle" class="subtitle">商品のQRコードを枠内に映してください</p>
   <a id="backButton" class="button secondary hidden" href="#">← 前の画面に戻る</a>
   <section class="card">
     <div id="reader"></div>
@@ -34,6 +34,27 @@
   const params = new URLSearchParams(location.search);
   const appUrl = String(params.get('app') || '').trim();
   const autoStart = String(params.get('autostart') || '') === '1';
+  /* 読取の目的（purpose）。省略時だけ従来の通常棚卸（inventory）として扱う。
+     product_select：JAN登録先の商品QR選択／jan_register：登録するJANバーコード読取。
+     formats：許可する読取形式（html5-qrcodeのformatName）。
+     ridはスタッフ画面が発行した依頼IDで、そのまま返すだけ（商品情報・セッション情報は受け取らない）。 */
+  const PURPOSES = {
+    inventory:{formats:['QR_CODE'],needsRid:false,subtitle:'商品のQRコードを枠内に映してください',reading:'読み取り中です。QRコードを枠内に映してください。',done:'QRコードを読み取りました。'},
+    product_select:{formats:['QR_CODE'],needsRid:true,subtitle:'登録先商品のQRコードを読み取ってください。',reading:'登録先商品のQRコードを読み取ってください。',done:'QRコードを読み取りました。'},
+    jan_register:{formats:['EAN_13','EAN_8'],needsRid:true,subtitle:'商品のJANバーコードを横向きの枠に合わせてください。',reading:'商品のJANバーコードを横向きの枠に合わせてください。',done:'JANバーコードを読み取りました。'}
+  };
+  const RID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+  function parseConfig(p){
+    const hasPurpose = p.has('purpose');
+    const purpose = hasPurpose ? String(p.get('purpose')) : 'inventory';
+    if(!Object.prototype.hasOwnProperty.call(PURPOSES,purpose))return {ok:false,purpose:'',requestId:'',error:'このページの利用方法が正しくありません（読取の種類が不明です）。元の画面から開き直してください。'};
+    const rid = String(p.get('rid') || '');
+    const ridOk = RID_PATTERN.test(rid);
+    if(PURPOSES[purpose].needsRid&&!ridOk)return {ok:false,purpose:purpose,requestId:'',error:'このページの利用方法が正しくありません（依頼情報が正しくありません）。元の画面から開き直してください。'};
+    return {ok:true,purpose:purpose,requestId:ridOk?rid:'',error:''};
+  }
+  const config = parseConfig(params);
+  const purposeDef = PURPOSES[config.purpose] || PURPOSES.inventory;
   const startButton = document.getElementById('startButton');
   const stopButton = document.getElementById('stopButton');
   const statusBox = document.getElementById('status');
@@ -53,12 +74,30 @@
      重複処理を防げるようにする。window.openerが無い（従来どおりの遷移で開かれた等）
      場合や送信に失敗した場合は、falseを返し、呼び出し側が従来のlocation.replace
      方式へフォールバックする。 */
-  function sendQrToOpener(qr,scanId){
+  function sendQrToOpener(qr,scanId,format){
     try{
       if(!window.opener||window.opener.closed)return false;
-      window.opener.postMessage({source:'qr-inventory-camera',qr:qr,id:scanId},'*');
+      /* source・qr・idは従来のまま。format・purpose・requestIdは追加項目（旧スタッフ画面は無視できる）。 */
+      window.opener.postMessage({source:'qr-inventory-camera',qr:qr,id:scanId,format:format,purpose:config.purpose,requestId:config.requestId},'*');
       return true;
     }catch(error){return false}
+  }
+  function validJan(value){return /^[0-9]+$/.test(value)}
+  function formatOf(result){
+    const f=result&&result.result&&result.result.format;
+    return f&&typeof f.formatName==='string'?f.formatName:'';
+  }
+  function wrongFormatMessage(formatName){
+    if(config.purpose==='jan_register'){
+      if(!formatName)return 'バーコードの種類を確認できませんでした。もう一度、JANバーコードを映してください。';
+      if(formatName==='QR_CODE')return 'これはQRコードです。商品のJANバーコード（縦線のバーコード）を映してください。';
+      return 'この種類のコードは使えません。商品のJANバーコードを映してください。';
+    }
+    if(config.purpose==='product_select'){
+      if(formatName==='EAN_13'||formatName==='EAN_8')return 'これはJANバーコードです。登録先商品のQRコードを読み取ってください。';
+      return 'この種類のコードは使えません。登録先商品のQRコードを読み取ってください。';
+    }
+    return '棚卸用QRの形式ではありません。';
   }
 
   function makeScanId(){
@@ -67,12 +106,20 @@
   }
 
   async function start(){
-    if(running)return; completed=false; resultBox.style.display='none'; returnButton.classList.add('hidden'); startButton.disabled=true; status('カメラを起動しています……');
+    if(running||!config.ok)return; completed=false; resultBox.style.display='none'; returnButton.classList.add('hidden'); startButton.disabled=true; status('カメラを起動しています……');
     try{
-      scanner=new Html5Qrcode('reader',{formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE]});
-      const size=Math.min(Math.max(Math.floor(innerWidth*.68),220),330);
-      await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:size,height:size},aspectRatio:1},success,function(){});
-      running=true; startButton.classList.add('hidden'); stopButton.classList.remove('hidden'); status('読み取り中です。QRコードを枠内に映してください。');
+      scanner=new Html5Qrcode('reader',{formatsToSupport:purposeDef.formats.map(function(name){return Html5QrcodeSupportedFormats[name]})});
+      let qrbox;
+      if(config.purpose==='jan_register'){
+        /* 1次元バーコード用の横長の枠（幅は画面幅に収め、高さは幅より小さくする）。 */
+        const w=Math.min(Math.max(Math.floor(innerWidth*.82),240),360);
+        qrbox={width:w,height:Math.floor(w*.5)};
+      }else{
+        const size=Math.min(Math.max(Math.floor(innerWidth*.68),220),330);
+        qrbox={width:size,height:size};
+      }
+      await scanner.start({facingMode:'environment'},{fps:10,qrbox:qrbox,aspectRatio:1},success,function(){});
+      running=true; startButton.classList.add('hidden'); stopButton.classList.remove('hidden'); status(purposeDef.reading);
     }catch(error){startButton.disabled=false;startButton.classList.remove('hidden');status(cameraError(error),'bad')}
   }
 
@@ -82,12 +129,36 @@
     running=false;startButton.disabled=false;startButton.classList.remove('hidden');stopButton.classList.add('hidden');
   }
 
-  async function success(decoded){
+  async function success(decoded,result){
     if(completed)return;
-    const qr=String(decoded||'').trim().toUpperCase();
-    if(!validQr(qr)){status('棚卸用QRの形式ではありません。\n読み取り値：'+qr,'bad');return}
+    const isJan=config.purpose==='jan_register';
+    const formatName=formatOf(result);
+    /* 許可されていない形式は完了扱いにせず、案内だけ出して読み取りを続ける
+       （連続フレームで別の形式が一瞬写っても、正しいコードを映し直すだけで済むようにするため）。
+       通常棚卸・商品QR選択は、QR_CODEだけを対象にhtml5-qrcodeへ渡しているため、
+       formatが取得できない場合は従来どおり扱う。JAN登録はformatが必須。 */
+    if(isJan||formatName){
+      if(purposeDef.formats.indexOf(formatName)<0){status(wrongFormatMessage(formatName),'bad');return}
+    }
+    const text=String(decoded==null?'':decoded).trim();
+    const qr=isJan?text:text.toUpperCase();
+    if(isJan?!validJan(qr):!validQr(qr)){
+      status(isJan?'JANバーコードの形式ではありません。数字だけのバーコードを映してください。':'棚卸用QRの形式ではありません。\n読み取り値：'+qr,'bad');return;
+    }
     completed=true;if(navigator.vibrate)navigator.vibrate(120);await stop();
-    resultBox.textContent=qr;resultBox.style.display='block';status('QRコードを読み取りました。','ok');
+    resultBox.textContent=qr;resultBox.style.display='block';status(purposeDef.done,'ok');
+    /* 通常棚卸だけ従来のURLフォールバックを使う。JAN登録・商品QR選択は、読取値を
+       URLへ含めず、管理者モードを失わせないよう自動遷移もしない。 */
+    if(config.purpose!=='inventory'){
+      if(sendQrToOpener(qr,makeScanId(),formatName||'QR_CODE')){
+        status(purposeDef.done+'元の画面へ反映しました。','ok');
+        setTimeout(function(){try{window.close()}catch(error){}},400);
+        setTimeout(function(){status(purposeDef.done+'元の画面へ反映しました。\nこの画面が自動で閉じない場合は、この画面を閉じて元の棚卸画面のタブへ戻ってください。','ok')},1200);
+        return;
+      }
+      status('元の画面へ結果を返せませんでした。元の棚卸画面のタブへ戻り、もう一度読み取るか手入力してください。','bad');
+      return;
+    }
     const url=destination(qr);
     /* 戻るリンク（手動フォールバック）は、新方式・従来方式のどちらの場合でも
        必ず表示しておく（postMessageが届かなかった場合等に利用者が自分で
@@ -105,7 +176,7 @@
        まま残り、上のreturnButton（手動の戻るリンク）で復帰できる（自動で
        location.replaceするフォールバックは行わない。過去にこの自動フォールバックが
        原因でQR棚卸アプリ側の「画面が再読込みされる」不具合が起きたため）。 */
-    if(sendQrToOpener(qr,makeScanId())){
+    if(sendQrToOpener(qr,makeScanId(),formatName||'QR_CODE')){
       status('QRコードを読み取りました。元の画面へ反映しました。','ok');
       setTimeout(function(){try{window.close()}catch(error){}},400);
       return;
@@ -134,12 +205,18 @@
     backButton.classList.remove('hidden');
     backButton.addEventListener('click',async function(event){
       event.preventDefault();
-      if(completed)return;
+      /* 通常棚卸は従来どおり。JAN登録・商品QR選択は、読取後に結果を返せなかった場合の
+         「値を含まない戻るリンク」としても使えるようにする。 */
+      if(completed&&config.purpose==='inventory')return;
       await stop();
       location.replace(appUrl);
     });
   }
-  if(autoStart)setTimeout(start,350);
+  document.getElementById('subtitle').textContent=purposeDef.subtitle;
+  if(!config.ok){
+    startButton.classList.add('hidden');
+    status(config.error,'bad');
+  }else if(autoStart)setTimeout(start,350);
 </script>
 </body>
 </html>
