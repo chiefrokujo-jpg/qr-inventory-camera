@@ -33,48 +33,68 @@ function makeEl() {
   };
 }
 
-/* opts: {search, opener: 'ok'|'none'|'throw', startError} */
+/* opts: {search, opener: 'ok'|'none'|'throw'|'focusThrow', startError, startErrors:[…], settings, settingsThrow,
+           noSettings, stopThrows, closeThrows, video, innerWidth} */
 function load(opts) {
   opts = opts || {};
   const els = {};
   const timers = [];
+  const intervals = [];
   const posted = [];
   const replaced = [];
   const scannerCalls = [];
+  const bodyClasses = new Set();
   let closed = 0;
+  let focused = 0;
   const ctx = {
-    console, URLSearchParams, String, Math, Date, Object, Array, encodeURIComponent, Promise,
+    console: { warn() {}, log() {}, error() {} }, URLSearchParams, String, Math, Date, Object, Array, encodeURIComponent, Promise,
     innerWidth: opts.innerWidth || 390,
     location: { search: opts.search || '', replace: u => replaced.push(u) },
     navigator: { vibrate() {} },
-    setTimeout: (f, d) => { timers.push({ f, d }); return timers.length; },
+    setTimeout: (f, d) => { const id = timers.length + 1; timers.push({ f, d, id, cancelled: false }); return id; },
+    clearTimeout: (id) => { timers.forEach(x => { if (x.id === id) x.cancelled = true; }); },
+    setInterval: (f, d) => { const id = intervals.length + 1; intervals.push({ f, d, id, cleared: false }); return id; },
+    clearInterval: (id) => { intervals.forEach(x => { if (x.id === id) x.cleared = true; }); },
     addEventListener() {},
-    document: { getElementById: id => els[id] || (els[id] = makeEl()) },
+    document: {
+      getElementById: id => els[id] || (els[id] = makeEl()),
+      body: { classList: { add: c => bodyClasses.add(c), remove: c => bodyClasses.delete(c), contains: c => bodyClasses.has(c) } },
+      querySelector: sel => (sel === '#reader video' ? (opts.video || null) : null)
+    },
     Html5QrcodeSupportedFormats: { QR_CODE: 0, EAN_13: 7, EAN_8: 6 },
     Html5Qrcode: function (id, cfg) {
       this.cfg = cfg; scannerCalls.push(this);
+      const index = scannerCalls.length - 1;
       this.start = async (cam, conf, ok) => {
         this.startArgs = { cam, conf, ok };
+        if (opts.startErrors && opts.startErrors[index] !== undefined) throw opts.startErrors[index];
         if (opts.startError) throw opts.startError;
       };
-      this.stop = async () => { this.stopped = (this.stopped || 0) + 1; };
+      this.stop = async () => { this.stopped = (this.stopped || 0) + 1; if (opts.stopThrows) throw new Error('stop failed'); };
       this.clear = async () => {};
+      if (!opts.noSettings) this.getRunningTrackSettings = () => { if (opts.settingsThrow) throw new Error('x'); return opts.settings; };
     }
   };
   ctx.window = ctx;
   ctx.crypto = { randomUUID: () => 'uuid-' + posted.length };
-  if (opts.opener === 'ok') ctx.opener = { closed: false, postMessage: (d, o) => posted.push({ d, o }) };
-  else if (opts.opener === 'throw') ctx.opener = { closed: false, postMessage() { throw new Error('x'); } };
+  if (opts.opener === 'ok') ctx.opener = { closed: false, postMessage: (d, o) => posted.push({ d, o }), focus() { focused++; } };
+  else if (opts.opener === 'throw') ctx.opener = { closed: false, postMessage() { throw new Error('x'); }, focus() { focused++; } };
+  else if (opts.opener === 'focusThrow') ctx.opener = { closed: false, postMessage: (d, o) => posted.push({ d, o }), focus() { focused++; throw new Error('focus'); } };
   else ctx.opener = null;
-  ctx.close = () => { closed++; };
+  ctx.close = () => { closed++; if (opts.closeThrows) throw new Error('close'); };
   vm.createContext(ctx);
   vm.runInContext(script, ctx);
   return {
-    ctx, els, timers, posted, replaced, scannerCalls,
+    ctx, els, timers, intervals, posted, replaced, scannerCalls, bodyClasses,
     closed: () => closed,
+    focused: () => focused,
     run: code => vm.runInContext(code, ctx),
     async start() { await ctx.start(); return scannerCalls[scannerCalls.length - 1]; },
-    flush() { const t = timers.splice(0); t.forEach(x => x.f()); }
+    flush() { const t = timers.splice(0).filter(x => !x.cancelled); t.forEach(x => x.f()); },
+    /* 指定した遅延のタイマー（取り消されていないもの）だけを実行する */
+    fire(d) { const t = timers.filter(x => x.d === d && !x.cancelled); t.forEach(x => { x.cancelled = true; x.f(); }); return t.length; },
+    pending(d) { return timers.filter(x => x.d === d && !x.cancelled).length; },
+    async settle() { for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); }
   };
 }
 
@@ -299,17 +319,18 @@ async function main() {
         eq(tag + ': 自動location.replaceしない', t.replaced.length, 0);
         eq(tag + ': 案内文', t.els.status.textContent, '元の画面へ結果を返せませんでした。元の棚卸画面のタブへ戻り、もう一度読み取るか手入力してください。');
         check(tag + ': 結果リンクを表示しない', t.els.returnButton.hidden() && t.els.returnButton.href === '');
-        check(tag + ': 戻るリンクに値・rid・purposeを含まない', t.els.backButton.href === APP && !t.els.backButton.href.includes(val));
+        check(tag + ': 戻るボタンにapp・値・rid・purposeを含まない（href未設定）', t.els.backButton.href === '');
         eq(tag + ': closeしない', t.closed(), 0);
       }
     }
-    /* 戻るリンクはpurposeに関係なく値を含まない */
+    /* 管理者用途の戻るボタンは、app URLへ移動しない（下の「戻るボタン（管理者用途）」で詳細を検査） */
     t = load({ search: '?purpose=jan_register&rid=' + UUID + '&app=' + encodeURIComponent(APP) });
-    eq('jan: 戻るリンクhref=app', t.els.backButton.href, APP);
+    check('jan: 戻るボタンにapp URLを設定しない（リンク遷移させない）', t.els.backButton.href === '' && !t.els.backButton.hidden());
     await t.start();
     await t.ctx.success('4901234567894', fmt('EAN_13'));
     await t.els.backButton.listeners.click({ preventDefault() {} });
-    eq('jan: 完了後の戻るリンクは明示タップで遷移', t.replaced[0], APP);
+    await t.settle();
+    eq('jan: 完了後（結果を返せなかった場合）の戻るでもlocation.replaceしない', t.replaced.length, 0);
     t = load({ search: '?app=' + encodeURIComponent(APP), opener: 'ok' });
     await t.start();
     await t.ctx.success(QR, fmt('QR_CODE'));
@@ -320,6 +341,282 @@ async function main() {
     await t.els.backButton.listeners.click({ preventDefault() {} });
     eq('inventory: 読取前の戻る=stopして遷移', t.replaced[0], APP);
     eq('inventory: 戻る時にカメラ停止', t.scannerCalls[0].stopped, 1);
+  }
+
+  /* ===== JAN読取設定（jan_registerだけ）とQR設定の維持 ===== */
+  {
+    const J = '?purpose=jan_register&rid=' + UUID;
+    const PS = '?purpose=product_select&rid=' + UUID;
+    let t = load({ search: J });
+    let sc = await t.start();
+    const c = sc.startArgs.conf;
+    const vc = c.videoConstraints;
+    check('JAN: html5-qrcodeへ渡す形式はEAN_13／EAN_8だけ', JSON.stringify(sc.cfg.formatsToSupport) === '[7,6]');
+    check('JAN: 背面カメラ（videoConstraints.facingMode=environment。ライブラリはvideoConstraints有効時に第1引数を使わないため）', vc && vc.facingMode === 'environment' && sc.startArgs.cam.facingMode === 'environment');
+    check('JAN: 高解像度をideal指定（幅1920・高さ1080）', vc && vc.width && vc.width.ideal === 1920 && vc.height && vc.height.ideal === 1080);
+    check('JAN: exact指定を使わない（端末が対応できなくてもフォールバックできる）', JSON.stringify(vc).indexOf('exact') < 0 && JSON.stringify(vc).indexOf('min') < 0);
+    check('JAN: aspectRatio: 1を適用しない（映像を正方形へ強制しない）', c.aspectRatio === undefined && !('aspectRatio' in vc));
+    check('JAN: disableFlipを有効にする', c.disableFlip === true);
+    check('JAN: fpsは現実的な範囲（10〜20）', c.fps >= 10 && c.fps <= 20 && c.fps === 15);
+    check('JAN: qrboxは関数（ライブラリが渡すviewfinderWidth／Heightを基準にする）', typeof c.qrbox === 'function');
+    check('JAN: videoConstraintsにライブラリが拒否する音声系キーが無い（無視されない）', ['autoGainControl', 'channelCount', 'echoCancellation', 'latency', 'noiseSuppression', 'sampleRate', 'sampleSize', 'volume'].every(k => !(k in vc)));
+    check('JAN: 未対応の推測オプション（torch・advanced・focusMode等）を追加していない', Object.keys(c).sort().join(',') === 'disableFlip,fps,qrbox,videoConstraints' && Object.keys(vc).sort().join(',') === 'facingMode,height,width');
+    check('JAN: UPC_Aを許可していない', JSON.stringify(sc.cfg.formatsToSupport).indexOf('UPC') < 0 && !/UPC_A/.test(script));
+
+    /* qrbox関数：viewfinderWidth／viewfinderHeightから計算する */
+    for (const W of [320, 375, 390, 414, 430]) {
+      const V = W - 34;
+      const H = Math.floor(V * 16 / 9);
+      const q = c.qrbox(V, H);
+      check('qrbox(' + V + '×' + H + '): 横長・正の整数・表示領域内・50px以上', q.width > q.height && Number.isInteger(q.width) && Number.isInteger(q.height) && q.width <= V && q.height <= H && q.width >= 50 && q.height >= 50);
+    }
+    const q1 = c.qrbox(356, 633), q2 = c.qrbox(300, 633);
+    check('qrbox：viewfinderWidthに比例する（window.innerWidthに依存しない）', q1.width !== q2.width && Math.abs(q1.width / 356 - q2.width / 300) < .01);
+    check('qrbox：viewfinderHeightが小さければ高さを収める', c.qrbox(356, 120).height <= 120 && c.qrbox(356, 120).width <= 356);
+    check('qrbox：異常な入力（0・負数・NaN・undefined）でも例外にならず0以下を返さない', [[0, 0], [-5, -5], [NaN, NaN], [undefined, undefined], [1, 1]].every(function (a) { const q = c.qrbox(a[0], a[1]); return q.width >= 1 && q.height >= 1; }));
+    t.ctx.innerWidth = 10;
+    const q3 = c.qrbox(356, 633);
+    check('qrbox：window.innerWidthを変えても結果が変わらない', q3.width === q1.width && q3.height === q1.height);
+    check('qrbox関数のソースはinnerWidthを参照しない', !/innerWidth/.test((script.match(/function janQrbox\([\s\S]*?\n  \}/) || [''])[0]));
+
+    /* QR（inventory・product_select）の設定はHEAD 37e4efbのまま */
+    for (const search of ['', PS]) {
+      const tq = load({ search });
+      const sq = await tq.start();
+      const cq = sq.startArgs.conf;
+      const tag = search ? 'product_select' : 'inventory';
+      check(tag + ': fps=10・aspectRatio=1・qrboxは正方形（従来どおり）', cq.fps === 10 && cq.aspectRatio === 1 && typeof cq.qrbox === 'object' && cq.qrbox.width === cq.qrbox.height && cq.qrbox.width === Math.min(Math.max(Math.floor(390 * .68), 220), 330));
+      check(tag + ': videoConstraints・disableFlipを追加していない・カメラ指定は従来どおり', !('videoConstraints' in cq) && !('disableFlip' in cq) && Object.keys(cq).sort().join(',') === 'aspectRatio,fps,qrbox' && JSON.stringify(sq.startArgs.cam) === '{"facingMode":"environment"}');
+      check(tag + ': QR_CODEだけ', JSON.stringify(sq.cfg.formatsToSupport) === '[0]');
+      check(tag + ': 補助案内のタイマーを作らない', tq.pending(9000) === 0 && tq.timers.length === 0);
+      check(tag + ': body.janを付けない', !tq.bodyClasses.has('jan'));
+    }
+    check('JAN: body.jan を付ける', t.bodyClasses.has('jan'));
+    /* QR設定の実装行がHEAD(37e4efb)と同一 */
+    const qrLines = ["const size=Math.min(Math.max(Math.floor(innerWidth*.68),220),330);", "await scanner.start({facingMode:'environment'},{fps:10,qrbox:qrbox,aspectRatio:1},success,function(){});", "scanner=new Html5Qrcode('reader',{formatsToSupport:purposeDef.formats.map(function(name){return Html5QrcodeSupportedFormats[name]})});"];
+    check('QR用の設定行が現在のindex.htmlに従来どおり存在する', qrLines.every(l => script.indexOf(l) >= 0));
+    try {
+      const head = require('child_process').execFileSync('git', ['show', '37e4efb:index.html'], { cwd: path.join(__dirname, '..'), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).replace(/\r\n/g, '\n');
+      check('QR用の設定行が37e4efbのindex.htmlにも同一のまま存在する（QR設定の変更なし）', qrLines.every(l => head.indexOf(l) >= 0 && script.replace(/\r\n/g, '\n').indexOf(l) >= 0));
+    } catch (e) { console.log('（注意）git showが使えないため37e4efbとの比較は未実施'); }
+
+    /* 解像度の要求が原因の起動失敗だけ、解像度指定を外して1回やり直す */
+    const rf = load({ search: J, startErrors: ['Error getting userMedia, error = OverconstrainedError: constraint'] });
+    await rf.ctx.start();
+    check('解像度が原因（OverconstrainedError文字列）で失敗したら、解像度指定なしで1回だけやり直して起動する', rf.scannerCalls.length === 2 && !('videoConstraints' in rf.scannerCalls[1].startArgs.conf) && rf.scannerCalls[1].startArgs.conf.aspectRatio === undefined && rf.scannerCalls[1].startArgs.conf.disableFlip === true && rf.run('running') === true);
+    const rf2 = load({ search: J, startErrors: [{ name: 'OverconstrainedError', message: 'x' }] });
+    await rf2.ctx.start();
+    check('OverconstrainedError（オブジェクト）でも同様にやり直す', rf2.scannerCalls.length === 2 && rf2.run('running') === true);
+    const rf3 = load({ search: J, startErrors: [{ name: 'NotAllowedError' }] });
+    await rf3.ctx.start();
+    check('権限拒否などは、やり直さず従来の日本語表示（再試行で権限を再要求しない）', rf3.scannerCalls.length === 1 && rf3.els.status.textContent === 'カメラが許可されていません。ブラウザのサイト設定で許可してください。');
+    const rf4 = load({ search: J, startErrors: [{ name: 'OverconstrainedError' }, { name: 'NotFoundError' }] });
+    await rf4.ctx.start();
+    check('やり直しも失敗した場合は、その日本語エラーを表示して再試行を重ねない（2回まで）', rf4.scannerCalls.length === 2 && rf4.els.status.textContent === '利用できるカメラが見つかりません。' && rf4.run('running') === false);
+  }
+
+  /* ===== 補助案内（jan_registerだけ・一定時間デコード成功がない場合） ===== */
+  {
+    const J = '?purpose=jan_register&rid=' + UUID;
+    let t = load({ search: J });
+    await t.start();
+    check('補助案内: 開始直後は表示しない・9秒のタイマーが1つ', t.els.help.hidden() && t.pending(9000) === 1 && t.timers.every(x => x.d === 9000 || x.d === 350));
+    const readingText = t.els.status.textContent;
+    t.fire(9000);
+    const ht = t.els.helpText.textContent;
+    check('補助案内: 指定時間後に表示する', !t.els.help.hidden() && ht.length > 0);
+    check('補助案内: バーコード全体・左右の余白', /バーコード全体/.test(ht) && /左右の余白/.test(ht));
+    check('補助案内: 近すぎる場合は少し離す', /近すぎる/.test(ht) && /離/.test(ht));
+    check('補助案内: 水平に合わせる', /水平/.test(ht));
+    check('補助案内: 明るい場所', /明るい場所/.test(ht));
+    check('補助案内: 読み取れない場合は元の画面で手入力できる', /元の画面/.test(ht) && /手入力/.test(ht));
+    check('補助案内: スキャナーを停止しない・読取を継続する', t.scannerCalls[0].stopped === undefined && t.run('running') === true && t.run('completed') === false);
+    check('補助案内: 赤いエラー表示（status.bad）を使わない・読取中の表示を変えない', t.els.status.textContent === readingText && t.els.status.className.indexOf('bad') < 0 && t.els.help.className.indexOf('bad') < 0);
+    check('補助案内: 案内用の別の見た目（.help）で、エラー用（.status.bad）と区別している', /\.help\{[^}]*background:#fff8e1/.test(html) && /\.status\.bad\{/.test(html) && !/id="help"[^>]*class="[^"]*bad/.test(html));
+    check('補助案内: 読取処理は続くので、その後も結果を受理できる', (await (async () => { await t.ctx.success('4901234567894', fmt('EAN_13')); return t.run('completed'); })()) === true);
+    check('補助案内: 読取成功で案内を隠す', t.els.help.hidden());
+
+    /* 一度だけ */
+    t = load({ search: J });
+    await t.start();
+    const timer = t.timers.find(x => x.d === 9000);
+    timer.cancelled = false;
+    timer.f(); t.els.helpText.textContent = 'x';
+    timer.f();
+    check('補助案内: 一度だけ表示する（同じタイマーが再実行されても再表示しない）', t.els.helpText.textContent === 'x');
+
+    /* 成功・停止・再開でタイマー解除 */
+    t = load({ search: J });
+    await t.start();
+    await t.ctx.success('4901234567894', fmt('EAN_13'));
+    check('補助案内: 成功時にタイマーを解除する', t.pending(9000) === 0);
+    t.fire(9000);
+    check('補助案内: 解除後は表示されない', t.els.help.hidden());
+    t = load({ search: J });
+    await t.start();
+    await t.els.stopButton.listeners.click();
+    check('補助案内: 停止時にタイマーを解除する', t.pending(9000) === 0);
+    t = load({ search: J });
+    await t.start();
+    const oldTimer = t.timers.find(x => x.d === 9000);
+    const oldF = oldTimer.f;
+    await t.els.stopButton.listeners.click();
+    await t.start();
+    check('補助案内: 再開すると新しいタイマー1つだけ（古いタイマーは取り消し済み）', t.pending(9000) === 1 && oldTimer.cancelled === true);
+    oldF();
+    check('補助案内: 古いタイマーが次の読取へ影響しない（表示されない）', t.els.help.hidden());
+    t.fire(9000);
+    check('補助案内: 新しいタイマーは通常どおり表示する', !t.els.help.hidden());
+    await t.els.stopButton.listeners.click(); await t.start();
+    check('補助案内: 再開時は案内を一度隠す（新しい読取でもう一度表示できる）', t.els.help.hidden() && t.pending(9000) === 1);
+    check('補助案内: 画面終了（pagehide）でタイマーを解除する（ソース）', /addEventListener\('pagehide',function\(\)\{disarmHelp\(\);stopDiagTimer\(\);/.test(script));
+    t = load({ search: J, startError: 'x' });
+    await t.ctx.start();
+    check('補助案内: 起動に失敗した場合はタイマーを作らない', t.pending(9000) === 0);
+
+    /* inventory／product_selectには追加しない */
+    for (const search of ['', '?purpose=product_select&rid=' + UUID]) {
+      const tq = load({ search });
+      await tq.start(); tq.fire(9000);
+      check((search ? 'product_select' : 'inventory') + ': 補助案内を表示しない', tq.els.help.hidden() && tq.pending(9000) === 0);
+    }
+  }
+
+  /* ===== 診断表示（jan_registerだけ・利用者が押した時だけ） ===== */
+  {
+    const RID2 = 'diagrid-0123456789';
+    const APP2 = 'https://app.example.invalid/exec-secret';
+    const J = '?purpose=jan_register&rid=' + RID2 + '&app=' + encodeURIComponent(APP2);
+    check('診断: HTMLの初期状態は非表示', /id="diag"[^>]*class="diag hidden"/.test(html) && /id="help"[^>]*class="help hidden"/.test(html));
+    let t = load({ search: J, settings: { width: 1080, height: 1920, frameRate: 30, facingMode: 'environment', deviceId: 'DEVICE-SECRET' }, video: { videoWidth: 1080, videoHeight: 1920 } });
+    const sc = await t.start();
+    check('診断: カメラ起動後も、押すまで内容は空（表示しない）', t.els.diag.textContent === '' && t.els.diag.hidden() && t.intervals.length === 0);
+    sc.startArgs.conf.qrbox(356, 633);
+    await t.els.diagButton.listeners.click();
+    const d = t.els.diag.textContent;
+    check('診断: 押すと表示する（非表示を解除・ページ再読込なし・カメラを止めない）', !t.els.diag.hidden() && sc.stopped === undefined && t.run('running') === true && t.replaced.length === 0);
+    check('診断: 実解像度（設定値と映像フレーム）', /1080×1920/.test(d) && d.split('1080×1920').length === 3);
+    check('診断: frameRate', /30 fps/.test(d));
+    check('診断: facingMode', /カメラの向き：environment/.test(d));
+    check('診断: JAN用qrboxの計算結果', /読取枠：338×169（表示領域 356×633）/.test(d));
+    check('診断: purposeとライブラリ表記', /用途：jan_register/.test(d) && /html5-qrcode 2\.3\.8/.test(d));
+    check('診断: rid・app URL・deviceId等の秘密情報を表示しない', d.indexOf(RID2) < 0 && d.indexOf('exec-secret') < 0 && d.indexOf('app.example') < 0 && d.indexOf('DEVICE-SECRET') < 0 && !/token|sessionToken|scriptId|deploymentId|productId/i.test(d));
+    /* 読取途中（許可されない形式・不正な値で読取が続いている間）に得た値も、診断へ出さない */
+    {
+      const seen = ['4901234567894', '49-0123456', 'ZZZ-JANLEAK-123'];
+      for (const v of seen) await t.ctx.success(v, fmt('QR_CODE'));
+      await t.ctx.success('12ab', fmt('EAN_13'));
+      t.intervals[0].f();
+      const d2 = t.els.diag.textContent;
+      check('診断: 読取途中に得たJAN値・読取値を表示しない（読取は継続中）', t.run('running') === true && t.run('completed') === false && seen.every(v => d2.indexOf(v) < 0) && d2.indexOf('12ab') < 0 && /読取枠/.test(d2));
+    }
+    check('診断: 表示は1秒ごとに更新するタイマー1つ', t.intervals.length === 1 && t.intervals[0].d === 1000 && !t.intervals[0].cleared);
+    t.els.diagButton.listeners.click();
+    check('診断: もう一度押すと隠し、更新タイマーを解除する', t.els.diag.hidden() === true && t.intervals[0].cleared === true && t.els.diagButton.textContent === '診断情報を表示');
+    t.els.diagButton.listeners.click();
+    await t.els.stopButton.listeners.click();
+    check('診断: カメラ停止時に更新タイマーを解除する', t.intervals.every(x => x.cleared));
+
+    /* 取得不能・例外でも止まらない */
+    for (const [tag, o] of [['getRunningTrackSettingsが例外', { settingsThrow: true }], ['settingsがundefined', {}], ['getRunningTrackSettingsが無い', { noSettings: true }], ['値が不正', { settings: { width: 'x', height: null, frameRate: NaN, facingMode: '<script>' } }]]) {
+      const tn = load(Object.assign({ search: J }, o));
+      await tn.start();
+      let threw = false;
+      try { await tn.els.diagButton.listeners.click(); } catch (e) { threw = true; }
+      const dn = tn.els.diag.textContent;
+      check('診断（' + tag + '）: 例外にならず「取得できません」と表示・カメラ処理は継続', !threw && /取得できません/.test(dn) && tn.run('running') === true && dn.indexOf('<script>') < 0);
+    }
+    /* jan_register以外では使えない */
+    for (const search of ['', '?purpose=product_select&rid=' + UUID]) {
+      const tq = load({ search });
+      await tq.start();
+      await tq.els.diagButton.listeners.click();
+      check((search ? 'product_select' : 'inventory') + ': 診断は表示できない（内容が空・タイマーなし）', tq.els.diag.textContent === '' && tq.intervals.length === 0);
+    }
+    /* 静的：保存・外部通信・console出力なし */
+    const diagSrc = (script.match(/function safeNum[\s\S]*?diagButton\.addEventListener\('click',toggleDiag\);/) || [''])[0];
+    check('診断: 診断処理のソースがrid・app URL・requestId・qr・token等を参照しない', diagSrc.length > 300 && !/config\.requestId|appUrl|params|\bqr\b|token|sessionToken|location|document\.cookie/.test(diagSrc));
+    check('診断: storage・Cookie・外部通信・consoleを使っていない（スクリプト全体）', !/localStorage|sessionStorage|indexedDB|document\.cookie|fetch\(|XMLHttpRequest|sendBeacon|WebSocket|new Image\(/.test(script) && (script.match(/console\./g) || []).length === 1);
+  }
+
+  /* ===== 戻るボタン（管理者用途：product_select・jan_register） ===== */
+  {
+    const APP = 'https://example.invalid/app?x=1';
+    for (const purpose of ['product_select', 'jan_register']) {
+      const base = '?purpose=' + purpose + '&rid=' + UUID + '&app=' + encodeURIComponent(APP);
+      /* openerあり */
+      let t = load({ search: base, opener: 'ok' });
+      await t.start();
+      const ev = { prevented: 0, preventDefault() { this.prevented++; } };
+      t.els.backButton.listeners.click(ev);
+      await t.settle();
+      check(purpose + ': openerあり：リンク遷移を止める', ev.prevented === 1);
+      check(purpose + ': openerあり：カメラを停止してからopener.focus()を試す', t.scannerCalls[0].stopped === 1 && t.focused() === 1);
+      check(purpose + ': openerあり：window.close()を試す', t.closed() === 1);
+      check(purpose + ': openerあり：app URLへ移動しない（location.replaceなし）', t.replaced.length === 0);
+      t.flush();
+      check(purpose + ': openerあり：閉じられない場合は「元の棚卸画面のタブへ戻ってください」と案内', t.els.status.textContent === '元の棚卸画面のタブへ戻ってください。');
+      /* openerなし */
+      t = load({ search: base, opener: 'none' });
+      await t.start();
+      t.els.backButton.listeners.click({ preventDefault() {} });
+      await t.settle();
+      check(purpose + ': openerなし：遷移しない・closeも試さない', t.replaced.length === 0 && t.closed() === 0 && t.focused() === 0);
+      check(purpose + ': openerなし：日本語で案内（戻れない場合はこのタブを閉じる）', t.els.status.textContent === '元の棚卸画面のタブへ戻ってください。戻れない場合はこのタブを閉じてください。');
+      check(purpose + ': openerなし：カメラを安全に停止', t.scannerCalls[0].stopped === 1);
+      check(purpose + ': 案内・戻るボタンにpurpose・rid・値・appを含まない', t.els.status.textContent.indexOf(UUID) < 0 && t.els.status.textContent.indexOf('example.invalid') < 0 && t.els.backButton.href === '');
+      /* 二重クリック */
+      t = load({ search: base, opener: 'ok' });
+      await t.start();
+      t.els.backButton.listeners.click({ preventDefault() {} });
+      t.els.backButton.listeners.click({ preventDefault() {} });
+      t.els.backButton.listeners.click({ preventDefault() {} });
+      await t.settle();
+      check(purpose + ': 二重クリックでstop・focus・closeを重複実行しない', t.scannerCalls[0].stopped === 1 && t.focused() === 1 && t.closed() === 1);
+      t.flush();
+      t.els.backButton.listeners.click({ preventDefault() {} });
+      await t.settle();
+      check(purpose + ': 処理が終わった後の再タップは再度closeを試せる', t.closed() === 2);
+      /* 例外への安全性 */
+      t = load({ search: base, opener: 'ok', stopThrows: true });
+      await t.start();
+      t.els.backButton.listeners.click({ preventDefault() {} });
+      await t.settle(); t.flush();
+      check(purpose + ': stopが失敗してもfocus・close・案内は動く', t.focused() === 1 && t.closed() === 1 && t.els.status.textContent === '元の棚卸画面のタブへ戻ってください。' && t.replaced.length === 0);
+      t = load({ search: base, opener: 'focusThrow' });
+      await t.start();
+      t.els.backButton.listeners.click({ preventDefault() {} });
+      await t.settle(); t.flush();
+      check(purpose + ': opener.focus()が例外でもclose・案内は動く', t.focused() === 1 && t.closed() === 1 && t.els.status.textContent === '元の棚卸画面のタブへ戻ってください。');
+      t = load({ search: base, opener: 'ok', closeThrows: true });
+      await t.start();
+      t.els.backButton.listeners.click({ preventDefault() {} });
+      await t.settle(); t.flush();
+      check(purpose + ': window.close()が例外でも案内を表示する', t.closed() === 1 && t.els.status.textContent === '元の棚卸画面のタブへ戻ってください。');
+      /* カメラ未起動・appパラメータなしでも使える */
+      t = load({ search: '?purpose=' + purpose + '&rid=' + UUID, opener: 'ok' });
+      check(purpose + ': appパラメータが無くても戻るボタンを表示する', !t.els.backButton.hidden());
+      t.els.backButton.listeners.click({ preventDefault() {} });
+      await t.settle();
+      check(purpose + ': カメラ未起動でも安全に閉じる・遷移しない', t.closed() === 1 && t.replaced.length === 0 && t.scannerCalls.length === 0);
+    }
+    /* 読取成功の既存動作は維持（postMessage→close） */
+    for (const [purpose, val, f] of [['product_select', QR, 'QR_CODE'], ['jan_register', '4901234567894', 'EAN_13']]) {
+      const t = load({ search: '?purpose=' + purpose + '&rid=' + UUID, opener: 'ok' });
+      await t.start();
+      await t.ctx.success(val, fmt(f));
+      t.flush();
+      check(purpose + ': 読取成功→postMessage（source・qr・id・format・purpose・requestId）→400ms後にclose', t.posted.length === 1 && Object.keys(t.posted[0].d).sort().join(',') === 'format,id,purpose,qr,requestId,source' && t.posted[0].o === '*' && t.closed() === 1 && t.pending(400) === 0);
+    }
+    /* inventoryは従来どおり */
+    let ti = load({ search: '?app=' + encodeURIComponent(APP) });
+    await ti.start();
+    await ti.els.backButton.listeners.click({ preventDefault() {} });
+    check('inventory: 戻るリンクはapp URLを持ち、従来どおりstopしてlocation.replaceする', ti.els.backButton.href === APP && ti.replaced[0] === APP && ti.scannerCalls[0].stopped === 1 && ti.focused() === 0 && ti.closed() === 0);
+    ti = load({ search: '' });
+    check('inventory: appが無ければ戻るボタンに処理を付けない（従来どおり）', Object.keys(ti.els.backButton.listeners).length === 0 && ti.els.backButton.href === '');
+    check('静的: location.replaceは通常棚卸のフォールバックと通常棚卸の戻るだけ（管理者用途の戻る処理に無い）', (script.match(/location\.replace\(/g) || []).length === 2 && !/location\./.test((script.match(/async function goBackToOriginalTab[\s\S]*?\n  \}/) || [''])[0]));
+    check('静的: 管理者用途の戻る処理がopener.focus()とwindow.close()を使う', /opener\.focus\(\)/.test(script) && /window\.close\(\)/.test((script.match(/async function goBackToOriginalTab[\s\S]*?\n  \}/) || [''])[0]));
   }
 
   /* ===== 画面 ===== */
@@ -345,12 +642,15 @@ async function main() {
     eq('inventory: aspectRatio従来どおり', sc.startArgs.conf.aspectRatio, 1);
     eq('inventory: fps従来どおり', sc.startArgs.conf.fps, 10);
     eq('inventory: environmentカメラ', sc.startArgs.cam.facingMode, 'environment');
-    for (const w of [320, 360, 390, 430, 768, 1200]) {
+    for (const w of [320, 375, 390, 414, 430]) {
       sc = await load({ search: '?purpose=jan_register&rid=' + UUID, innerWidth: w }).start();
-      qb = sc.startArgs.conf.qrbox;
-      check('jan: 横長 (' + w + 'px)', qb.width > qb.height);
-      check('jan: 最小幅・最大幅 (' + w + 'px)', qb.width >= 240 && qb.width <= 360);
-      if (w >= 320 && w <= 430) check('jan: 縦画面からはみ出さない (' + w + 'px)', qb.width <= w - 32);
+      const V = w - 34; /* JAN画面の表示領域の幅（左右余白8px×2＋カード余白8px×2＋枠1px×2） */
+      qb = sc.startArgs.conf.qrbox(V, Math.floor(V * 16 / 9));
+      const oldEffective = Math.min(Math.min(Math.max(Math.floor(w * .82), 240), 360), w - 66);
+      check('jan: 横長 (' + w + 'px)', qb.width > qb.height && qb.height > 0);
+      check('jan: 幅は表示領域の90〜95% (' + w + 'px)', qb.width >= V * .9 - 1 && qb.width <= V * .95 + 1);
+      check('jan: 表示領域を超えない・0や負数にならない・最小50px以上 (' + w + 'px)', qb.width <= V && qb.height <= Math.floor(V * 16 / 9) && qb.width >= 50 && qb.height >= 50);
+      check('jan: 従来（旧qrbox＝' + oldEffective + 'px）より広い (' + w + 'px→' + qb.width + 'px)', qb.width > oldEffective);
     }
     sc = await load({ search: '?purpose=product_select&rid=' + UUID, innerWidth: 390 }).start();
     check('product_select: 正方形の枠', sc.startArgs.conf.qrbox.width === sc.startArgs.conf.qrbox.height);
