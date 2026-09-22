@@ -139,6 +139,7 @@
   const JAN_HELP_MS=9000;
   const JAN_HELP_TEXT='バーコードがなかなか読み取れません。\n・バーコード全体と左右の余白を、枠の中に入れてください。\n・近すぎる場合は、少し離してください。\n・バーコードを水平（横向き）に合わせてください。\n・明るい場所で試してください。\n・それでも読み取れない場合は、元の画面でJANコードを手入力できます。';
   let lastQrbox=null,helpTimer=null,helpShown=false,helpSession=0,diagTimer=null,diagOpen=false,backing=false;
+  let janStartedAt=null,janSuccessElapsedMs=null,janSuccessFormat='';
 
   function janQrbox(viewfinderWidth,viewfinderHeight){
     const W=Math.floor(Number(viewfinderWidth))||0,H=Math.floor(Number(viewfinderHeight))||0;
@@ -181,13 +182,34 @@
     },JAN_HELP_MS);
   }
 
-  /* 診断情報（利用者が「診断情報を表示」を押した時だけ）。表示するのは映像・読取枠の設定値だけで、
-     JAN値・rid・戻り先URL・認証情報・商品情報は扱わない。保存・送信・console出力もしない。 */
+  /* 診断情報（利用者が「診断情報を表示」を押した時だけ）。表示するのは映像・読取枠と
+     公開APIから得るトラック設定・対応範囲だけで、JAN値・rid・戻り先URL・認証情報・商品情報は
+     扱わない。保存・送信・console出力もしない。 */
   function safeNum(value){return typeof value==='number'&&isFinite(value)?value:null}
+  function safeDiagnosticString(value){return typeof value==='string'&&/^[A-Za-z0-9_. -]{1,80}$/.test(value)?value:''}
+  function diagnosticValue(value){
+    if(typeof value==='number'&&isFinite(value))return String(Math.round(value*10)/10);
+    if(typeof value==='boolean')return String(value);
+    if(typeof value==='string')return safeDiagnosticString(value)||'未対応';
+    if(Array.isArray(value)){
+      const values=value.filter(function(item){return typeof item==='boolean'||safeDiagnosticString(item)||(typeof item==='number'&&isFinite(item))});
+      return values.length?values.join(', '):'未対応';
+    }
+    if(value&&typeof value==='object'){
+      const min=safeNum(value.min),max=safeNum(value.max),step=safeNum(value.step);
+      if(min!==null&&max!==null)return min+'〜'+max+(step!==null?'（step '+step+'）':'');
+    }
+    return '未対応';
+  }
+  function trackValue(track,key){return track&&Object.prototype.hasOwnProperty.call(track,key)?diagnosticValue(track[key]):'未対応'}
+  function elapsedValue(){return janSuccessElapsedMs===null?'未計測':janSuccessElapsedMs+' ms（'+(Math.round(janSuccessElapsedMs/100)/10)+' 秒）'}
+  function monotonicNow(){try{return window.performance&&typeof performance.now==='function'?performance.now():null}catch(error){return null}}
   function diagLines(){
     const lines=['用途：jan_register','読取ライブラリ：html5-qrcode 2.3.8'];
     let settings=null;
     try{if(scanner&&running&&typeof scanner.getRunningTrackSettings==='function')settings=scanner.getRunningTrackSettings()}catch(error){settings=null}
+    let capabilities=null;
+    try{if(scanner&&running&&typeof scanner.getRunningTrackCapabilities==='function')capabilities=scanner.getRunningTrackCapabilities()}catch(error){capabilities=null}
     const w=settings&&safeNum(settings.width),h=settings&&safeNum(settings.height),fr=settings&&safeNum(settings.frameRate);
     const fm=settings&&typeof settings.facingMode==='string'&&/^(environment|user|left|right)$/.test(settings.facingMode)?settings.facingMode:'';
     lines.push('カメラ映像（設定値）：'+(w&&h?w+'×'+h:'取得できません'));
@@ -197,6 +219,10 @@
     try{const video=document.querySelector('#reader video');if(video){vw=video.videoWidth|0;vh=video.videoHeight|0}}catch(error){}
     lines.push('映像フレーム：'+(vw&&vh?vw+'×'+vh:'取得できません'));
     lines.push('読取枠：'+(lastQrbox?lastQrbox.width+'×'+lastQrbox.height+'（表示領域 '+lastQrbox.vw+'×'+lastQrbox.vh+'）':'取得できません'));
+    lines.push('成功まで：'+elapsedValue());
+    lines.push('成功形式：'+(janSuccessFormat||'未取得'));
+    const fields=[['zoom','ズーム'],['focusMode','フォーカスモード'],['focusDistance','フォーカス距離'],['exposureMode','露出モード'],['exposureCompensation','露出補正'],['torch','トーチ'],['width','幅'],['height','高さ'],['frameRate','フレームレート'],['facingMode','カメラの向き']];
+    fields.forEach(function(field){lines.push(field[1]+'（設定値）：'+trackValue(settings,field[0])+'／対応範囲：'+trackValue(capabilities,field[0]))});
     return lines.join('\n');
   }
   function renderDiag(){try{diagBox.textContent=diagLines()}catch(error){diagBox.textContent='診断情報を取得できません。'}}
@@ -213,7 +239,9 @@
     try{
       resetHelp();
       if(isJan){
+        janStartedAt=null;janSuccessElapsedMs=null;janSuccessFormat='';
         await startJan();
+        janStartedAt=monotonicNow();
       }else{
         scanner=new Html5Qrcode('reader',{formatsToSupport:purposeDef.formats.map(function(name){return Html5QrcodeSupportedFormats[name]})});
         const size=Math.min(Math.max(Math.floor(innerWidth*.68),220),330);
@@ -247,7 +275,14 @@
     if(isJan?!validJan(qr):!validQr(qr)){
       status(isJan?'JANバーコードの形式ではありません。数字だけのバーコードを映してください。':'棚卸用QRの形式ではありません。\n読み取り値：'+qr,'bad');return;
     }
-    completed=true;hideHelp();if(navigator.vibrate)navigator.vibrate(120);await stop();
+    completed=true;
+    if(isJan){
+      const now=monotonicNow();
+      janSuccessElapsedMs=typeof janStartedAt==='number'&&typeof now==='number'&&now>=janStartedAt?Math.round(now-janStartedAt):null;
+      janSuccessFormat=formatName;
+      if(diagOpen)renderDiag();
+    }
+    if(!diagOpen)hideHelp();if(navigator.vibrate)navigator.vibrate(120);await stop();
     resultBox.textContent=qr;resultBox.style.display='block';status(purposeDef.done,'ok');
     /* 通常棚卸だけ従来のURLフォールバックを使う。JAN登録・商品QR選択は、読取値を
        URLへ含めず、管理者モードを失わせないよう自動遷移もしない。 */

@@ -34,7 +34,7 @@ function makeEl() {
 }
 
 /* opts: {search, opener: 'ok'|'none'|'throw'|'focusThrow', startError, startErrors:[…], settings, settingsThrow,
-           noSettings, stopThrows, closeThrows, video, innerWidth} */
+           noSettings, capabilities, capabilitiesThrow, noCapabilities, now, video, innerWidth} */
 function load(opts) {
   opts = opts || {};
   const els = {};
@@ -48,6 +48,7 @@ function load(opts) {
   let focused = 0;
   const ctx = {
     console: { warn() {}, log() {}, error() {} }, URLSearchParams, String, Math, Date, Object, Array, encodeURIComponent, Promise,
+    performance: { now: () => opts.now === undefined ? 1000 : (typeof opts.now === 'function' ? opts.now() : opts.now) },
     innerWidth: opts.innerWidth || 390,
     location: { search: opts.search || '', replace: u => replaced.push(u) },
     navigator: { vibrate() {} },
@@ -73,6 +74,7 @@ function load(opts) {
       this.stop = async () => { this.stopped = (this.stopped || 0) + 1; if (opts.stopThrows) throw new Error('stop failed'); };
       this.clear = async () => {};
       if (!opts.noSettings) this.getRunningTrackSettings = () => { if (opts.settingsThrow) throw new Error('x'); return opts.settings; };
+      if (!opts.noCapabilities) this.getRunningTrackCapabilities = () => { if (opts.capabilitiesThrow) throw new Error('x'); return opts.capabilities; };
     }
   };
   ctx.window = ctx;
@@ -488,7 +490,8 @@ async function main() {
     const APP2 = 'https://app.example.invalid/exec-secret';
     const J = '?purpose=jan_register&rid=' + RID2 + '&app=' + encodeURIComponent(APP2);
     check('診断: HTMLの初期状態は非表示', /id="diag"[^>]*class="diag hidden"/.test(html) && /id="help"[^>]*class="help hidden"/.test(html));
-    let t = load({ search: J, settings: { width: 1080, height: 1920, frameRate: 30, facingMode: 'environment', deviceId: 'DEVICE-SECRET' }, video: { videoWidth: 1080, videoHeight: 1920 } });
+    let now = 1000;
+    let t = load({ search: J, now: () => now, settings: { width: 1080, height: 1920, frameRate: 30, facingMode: 'environment', zoom: 2, focusMode: 'continuous', focusDistance: 0.4, exposureMode: 'continuous', exposureCompensation: 0, torch: false, deviceId: 'DEVICE-SECRET' }, capabilities: { width: { min: 640, max: 1920 }, height: { min: 480, max: 1080 }, frameRate: { min: 15, max: 30 }, facingMode: ['environment'], zoom: { min: 1, max: 4, step: 0.1 }, focusMode: ['continuous', 'manual'], focusDistance: { min: 0, max: 1 }, exposureMode: ['continuous'], exposureCompensation: { min: -2, max: 2, step: 0.5 }, torch: true }, video: { videoWidth: 1080, videoHeight: 1920 } });
     const sc = await t.start();
     check('診断: カメラ起動後も、押すまで内容は空（表示しない）', t.els.diag.textContent === '' && t.els.diag.hidden() && t.intervals.length === 0);
     sc.startArgs.conf.qrbox(356, 633);
@@ -500,6 +503,8 @@ async function main() {
     check('診断: facingMode', /カメラの向き：environment/.test(d));
     check('診断: JAN用qrboxの計算結果', /読取枠：338×169（表示領域 356×633）/.test(d));
     check('診断: purposeとライブラリ表記', /用途：jan_register/.test(d) && /html5-qrcode 2\.3\.8/.test(d));
+    check('診断: 公開APIの設定値とcapabilitiesを表示', /ズーム（設定値）：2／対応範囲：1〜4（step 0.1）/.test(d) && /フォーカスモード（設定値）：continuous／対応範囲：continuous, manual/.test(d) && /露出補正（設定値）：0／対応範囲：-2〜2（step 0.5）/.test(d) && /トーチ（設定値）：false／対応範囲：true/.test(d));
+    check('診断: 成功前の時間・形式は未取得', /成功まで：未計測/.test(d) && /成功形式：未取得/.test(d));
     check('診断: rid・app URL・deviceId等の秘密情報を表示しない', d.indexOf(RID2) < 0 && d.indexOf('exec-secret') < 0 && d.indexOf('app.example') < 0 && d.indexOf('DEVICE-SECRET') < 0 && !/token|sessionToken|scriptId|deploymentId|productId/i.test(d));
     /* 読取途中（許可されない形式・不正な値で読取が続いている間）に得た値も、診断へ出さない */
     {
@@ -510,15 +515,18 @@ async function main() {
       const d2 = t.els.diag.textContent;
       check('診断: 読取途中に得たJAN値・読取値を表示しない（読取は継続中）', t.run('running') === true && t.run('completed') === false && seen.every(v => d2.indexOf(v) < 0) && d2.indexOf('12ab') < 0 && /読取枠/.test(d2));
     }
+    const roiBefore = t.run('JSON.stringify(lastQrbox)');
+    const videoBefore = JSON.stringify(t.ctx.document.querySelector('#reader video'));
     check('診断: 表示は1秒ごとに更新するタイマー1つ', t.intervals.length === 1 && t.intervals[0].d === 1000 && !t.intervals[0].cleared);
     t.els.diagButton.listeners.click();
     check('診断: もう一度押すと隠し、更新タイマーを解除する', t.els.diag.hidden() === true && t.intervals[0].cleared === true && t.els.diagButton.textContent === '診断情報を表示');
+    check('診断: 開閉で映像・ROIの寸法を変更しない', roiBefore === t.run('JSON.stringify(lastQrbox)') && videoBefore === JSON.stringify(t.ctx.document.querySelector('#reader video')));
     t.els.diagButton.listeners.click();
     await t.els.stopButton.listeners.click();
     check('診断: カメラ停止時に更新タイマーを解除する', t.intervals.every(x => x.cleared));
 
     /* 取得不能・例外でも止まらない */
-    for (const [tag, o] of [['getRunningTrackSettingsが例外', { settingsThrow: true }], ['settingsがundefined', {}], ['getRunningTrackSettingsが無い', { noSettings: true }], ['値が不正', { settings: { width: 'x', height: null, frameRate: NaN, facingMode: '<script>' } }]]) {
+    for (const [tag, o] of [['getRunningTrackSettingsが例外', { settingsThrow: true }], ['settingsがundefined', {}], ['getRunningTrackSettingsが無い', { noSettings: true }], ['getRunningTrackCapabilitiesが例外', { capabilitiesThrow: true }], ['getRunningTrackCapabilitiesが無い', { noCapabilities: true }], ['値が不正', { settings: { width: 'x', height: null, frameRate: NaN, facingMode: '<script>' } }]]) {
       const tn = load(Object.assign({ search: J }, o));
       await tn.start();
       let threw = false;
@@ -526,6 +534,16 @@ async function main() {
       const dn = tn.els.diag.textContent;
       check('診断（' + tag + '）: 例外にならず「取得できません」と表示・カメラ処理は継続', !threw && /取得できません/.test(dn) && tn.run('running') === true && dn.indexOf('<script>') < 0);
     }
+    now = 3500;
+    t = load({ search: J, now: () => now, settings: { width: 1080, height: 1920 }, capabilities: {} });
+    await t.start();
+    check('診断: JAN開始時刻を起動完了時に初期化する', t.run('janStartedAt') === 3500 && t.run('janSuccessElapsedMs') === null && t.run('janSuccessFormat') === '');
+    t.fire(9000);
+    t.els.diagButton.listeners.click();
+    now = 5123;
+    await t.ctx.success('4901234567894', fmt('EAN_13'));
+    check('診断: 成功時に経過時間とformatを保存する', t.run('janSuccessElapsedMs') === 1623 && t.run('janSuccessFormat') === 'EAN_13');
+    check('診断: 開いたまま成功すると時間・formatを表示したまま確認できる', !t.els.help.hidden() && !t.els.diag.hidden() && /成功まで：1623 ms（1.6 秒）/.test(t.els.diag.textContent) && /成功形式：EAN_13/.test(t.els.diag.textContent));
     /* jan_register以外では使えない */
     for (const search of ['', '?purpose=product_select&rid=' + UUID]) {
       const tq = load({ search });
