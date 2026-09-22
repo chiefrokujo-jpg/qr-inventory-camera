@@ -14,6 +14,7 @@
     button,a.button{display:flex;align-items:center;justify-content:center;width:100%;min-height:56px;margin-top:12px;padding:12px;border:0;border-radius:10px;background:#1769aa;color:#fff;font-size:18px;font-weight:800;text-decoration:none;cursor:pointer}
     button.secondary,a.secondary{background:#5e6e79}.status{margin-top:12px;padding:13px;border-radius:9px;background:#e8f1fb;font-weight:800;white-space:pre-wrap}.status.ok{background:#e6f4ea;color:#137333}.status.bad{background:#fce8e6;color:#b3261e}.hidden{display:none!important}.result{display:none;margin-top:12px;padding:14px;border:2px solid #34a853;border-radius:10px;background:#e6f4ea;font-size:22px;font-weight:900;overflow-wrap:anywhere}.note{color:#62717b;font-size:14px;line-height:1.6}
     .help{margin-bottom:12px;padding:13px;border:1px solid #f0c36d;border-radius:9px;background:#fff8e1;color:#5f4300;font-weight:700;line-height:1.6;white-space:pre-wrap}
+    .help summary{cursor:pointer}
     .help button{min-height:44px;margin-top:10px;font-size:16px}
     .diag{margin:10px 0 0;padding:10px;border-radius:8px;background:#fff;color:#172b3a;font-size:13px;font-weight:600;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
     body.jan main{padding:8px}body.jan .card{padding:8px}body.jan .status{position:sticky;bottom:8px;z-index:5;box-shadow:0 2px 10px rgba(20,45,65,.28)}
@@ -25,12 +26,15 @@
   <p id="subtitle" class="subtitle">商品のQRコードを枠内に映してください</p>
   <a id="backButton" class="button secondary hidden" href="#">← 前の画面に戻る</a>
   <section class="card">
+    <div id="reader"></div>
     <div id="help" class="help hidden" role="status">
-      <div id="helpText"></div>
+      <details id="helpDetails">
+        <summary id="helpSummary"></summary>
+        <div id="helpText"></div>
+      </details>
       <button id="diagButton" class="secondary" type="button">診断情報を表示</button>
       <pre id="diag" class="diag hidden"></pre>
     </div>
-    <div id="reader"></div>
     <button id="startButton" type="button">カメラを起動する</button>
     <button id="stopButton" class="secondary hidden" type="button">カメラを停止する</button>
     <div id="status" class="status">「カメラを起動する」を押してください。</div>
@@ -71,6 +75,8 @@
   const returnButton = document.getElementById('returnButton');
   const backButton = document.getElementById('backButton');
   const helpBox = document.getElementById('help');
+  const helpDetails = document.getElementById('helpDetails');
+  const helpSummary = document.getElementById('helpSummary');
   const helpText = document.getElementById('helpText');
   const diagButton = document.getElementById('diagButton');
   const diagBox = document.getElementById('diag');
@@ -138,6 +144,8 @@
   const JAN_QRBOX_WIDTH_RATIO=.95,JAN_QRBOX_HEIGHT_RATIO=.5;
   const JAN_HELP_MS=9000;
   const JAN_HELP_TEXT='バーコードがなかなか読み取れません。\n・バーコード全体と左右の余白を、枠の中に入れてください。\n・近すぎる場合は、少し離してください。\n・バーコードを水平（横向き）に合わせてください。\n・明るい場所で試してください。\n・それでも読み取れない場合は、元の画面でJANコードを手入力できます。';
+  const JAN_HELP_TITLE=JAN_HELP_TEXT.slice(0,JAN_HELP_TEXT.indexOf('\n'));
+  const JAN_HELP_BODY=JAN_HELP_TEXT.slice(JAN_HELP_TITLE.length+1);
   let lastQrbox=null,helpTimer=null,helpShown=false,helpSession=0,diagTimer=null,diagOpen=false,backing=false;
 
   function janQrbox(viewfinderWidth,viewfinderHeight){
@@ -169,7 +177,7 @@
   function disarmHelp(){helpSession++;if(helpTimer!==null){clearTimeout(helpTimer);helpTimer=null}}
   function hideHelp(){helpBox.classList.add('hidden')}
   function stopDiagTimer(){if(diagTimer!==null){clearInterval(diagTimer);diagTimer=null}}
-  function resetHelp(){disarmHelp();helpShown=false;hideHelp();stopDiagTimer();diagOpen=false;diagBox.classList.add('hidden');diagButton.textContent='診断情報を表示'}
+  function resetHelp(){disarmHelp();helpShown=false;hideHelp();helpDetails.open=false;stopDiagTimer();diagOpen=false;diagBox.classList.add('hidden');diagButton.textContent='診断情報を表示'}
   function armHelp(){
     if(!isJan)return;
     disarmHelp();helpShown=false;
@@ -177,7 +185,7 @@
     helpTimer=setTimeout(function(){
       helpTimer=null;
       if(session!==helpSession||!running||completed||helpShown)return;
-      helpShown=true;helpText.textContent=JAN_HELP_TEXT;helpBox.classList.remove('hidden');
+      helpShown=true;helpSummary.textContent=JAN_HELP_TITLE;helpText.textContent=JAN_HELP_BODY;helpDetails.open=false;helpBox.classList.remove('hidden');
     },JAN_HELP_MS);
   }
 
