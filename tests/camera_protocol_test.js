@@ -147,8 +147,7 @@ async function main() {
   {
     const t = load({ search: '' });
     const sc = await t.start();
-    eq('inventory: formatsToSupport=QRのみ(件数)', sc.cfg.formatsToSupport.length, 1);
-    eq('inventory: formatsToSupport=QR', sc.cfg.formatsToSupport[0], 0);
+    eq('inventory: QR・EAN-13・EAN-8', JSON.stringify(sc.cfg.formatsToSupport), '[0,7,6]');
     const t2 = load({ search: '?purpose=product_select&rid=' + UUID });
     const sc2 = await t2.start();
     eq('product_select: QRのみ', JSON.stringify(sc2.cfg.formatsToSupport), '[0]');
@@ -188,8 +187,10 @@ async function main() {
     eq('product_select: その他format拒否', t.posted.length, 0);
     t = await scan('', 'ok', QR, fmt('QR_CODE'));
     eq('inventory: QR受理', t.posted.length, 1);
-    t = await scan('', 'ok', QR, fmt('EAN_13'));
-    eq('inventory: EAN拒否', t.posted.length, 0);
+    t = await scan('', 'ok', '4901234567894', fmt('EAN_13'));
+    eq('inventory: EAN-13受理', t.posted[0].d.format, 'EAN_13');
+    t = await scan('', 'ok', '49123456', fmt('EAN_8'));
+    eq('inventory: EAN-8受理', t.posted[0].d.format, 'EAN_8');
     t = await scan('', 'ok', QR);
     eq('inventory: format省略(従来呼び出し)は受理', t.posted.length, 1);
     eq('inventory: format省略時はQR_CODE', t.posted[0].d.format, 'QR_CODE');
@@ -304,6 +305,12 @@ async function main() {
     t = await scan('?app=' + encodeURIComponent('https://example.invalid/app'), 'none', QR, fmt('QR_CODE'));
     t.flush();
     eq('inventory: appに?無し', t.replaced[0], 'https://example.invalid/app?qr=' + QR + '&camera=1');
+    t = await scan('?app=' + encodeURIComponent(APP), 'none', '4901234567894', fmt('EAN_13'));
+    t.flush();
+    eq('inventory: EAN-13のURL復路に形式を保持', t.replaced[0], APP + '&qr=4901234567894&camera=1&format=EAN_13');
+    t = await scan('?app=' + encodeURIComponent(APP), 'none', '49123456', fmt('EAN_8'));
+    t.flush();
+    eq('inventory: EAN-8のURL復路に形式を保持', t.replaced[0], APP + '&qr=49123456&camera=1&format=EAN_8');
     t = await scan('?app=' + encodeURIComponent(APP), 'throw', QR, fmt('QR_CODE'));
     t.flush();
     eq('inventory: postMessage失敗でもフォールバック', t.replaced.length, 1);
@@ -379,18 +386,18 @@ async function main() {
     check('qrbox：window.innerWidthを変えても結果が変わらない', q3.width === q1.width && q3.height === q1.height);
     check('qrbox関数のソースはinnerWidthを参照しない', !/innerWidth/.test((script.match(/function janQrbox\([\s\S]*?\n  \}/) || [''])[0]));
 
-    /* QR（inventory・product_select）の設定はHEAD 37e4efbのまま */
-    for (const search of ['', PS]) {
-      const tq = load({ search });
-      const sq = await tq.start();
-      const cq = sq.startArgs.conf;
-      const tag = search ? 'product_select' : 'inventory';
-      check(tag + ': fps=10・aspectRatio=1・qrboxは正方形（従来どおり）', cq.fps === 10 && cq.aspectRatio === 1 && typeof cq.qrbox === 'object' && cq.qrbox.width === cq.qrbox.height && cq.qrbox.width === Math.min(Math.max(Math.floor(390 * .68), 220), 330));
-      check(tag + ': videoConstraints・disableFlipを追加していない・カメラ指定は従来どおり', !('videoConstraints' in cq) && !('disableFlip' in cq) && Object.keys(cq).sort().join(',') === 'aspectRatio,fps,qrbox' && JSON.stringify(sq.startArgs.cam) === '{"facingMode":"environment"}');
-      check(tag + ': QR_CODEだけ', JSON.stringify(sq.cfg.formatsToSupport) === '[0]');
-      check(tag + ': 補助案内のタイマーを作らない', tq.pending(9000) === 0 && tq.timers.length === 0);
-      check(tag + ': body.janを付けない', !tq.bodyClasses.has('jan'));
-    }
+    /* 通常棚卸はQRとJANを同じ映像で読み、管理者の商品選択はQR専用を維持する。 */
+    const ti = load({ search: '' });
+    const si = await ti.start();
+    check('inventory: JAN用の高解像度・横長枠を使用', si.startArgs.conf.videoConstraints.width.ideal === 1920 && typeof si.startArgs.conf.qrbox === 'function');
+    check('inventory: QR・EAN-13・EAN-8だけ', JSON.stringify(si.cfg.formatsToSupport) === '[0,7,6]');
+    check('inventory: 管理者用の補助案内・body.janを出さない', ti.pending(9000) === 0 && !ti.bodyClasses.has('jan'));
+    const tq = load({ search: PS });
+    const sq = await tq.start();
+    const cq = sq.startArgs.conf;
+    check('product_select: 従来のQR用設定', cq.fps === 10 && cq.aspectRatio === 1 && typeof cq.qrbox === 'object' && cq.qrbox.width === cq.qrbox.height);
+    check('product_select: QR_CODEだけ', JSON.stringify(sq.cfg.formatsToSupport) === '[0]');
+    check('product_select: 補助案内なし・body.janなし', tq.pending(9000) === 0 && !tq.bodyClasses.has('jan'));
     check('JAN: body.jan を付ける', t.bodyClasses.has('jan'));
     /* QR設定の実装行がHEAD(37e4efb)と同一 */
     const qrLines = ["const size=Math.min(Math.max(Math.floor(innerWidth*.68),220),330);", "await scanner.start({facingMode:'environment'},{fps:10,qrbox:qrbox,aspectRatio:1},success,function(){});", "scanner=new Html5Qrcode('reader',{formatsToSupport:purposeDef.formats.map(function(name){return Html5QrcodeSupportedFormats[name]})});"];
@@ -629,9 +636,9 @@ async function main() {
   /* ===== 画面 ===== */
   {
     let t = load({ search: '' });
-    eq('inventory: 案内文', t.els.subtitle.textContent, '商品のQRコードを枠内に映してください');
+    eq('inventory: 案内文', t.els.subtitle.textContent, '商品のQRコードまたはJANバーコードを枠内に映してください');
     await t.start();
-    eq('inventory: 読取中文言', t.els.status.textContent, '読み取り中です。QRコードを枠内に映してください。');
+    eq('inventory: 読取中文言', t.els.status.textContent, '読み取り中です。QRコードまたはJANバーコードを枠内に映してください。');
     t = load({ search: '?purpose=product_select&rid=' + UUID });
     eq('product_select: 案内文', t.els.subtitle.textContent, '登録先商品のQRコードを読み取ってください。');
     await t.start();
@@ -644,10 +651,8 @@ async function main() {
     /* 読取枠 */
     let sc = await load({ search: '', innerWidth: 390 }).start();
     let qb = sc.startArgs.conf.qrbox;
-    check('inventory: 正方形の枠', qb.width === qb.height);
-    eq('inventory: 従来サイズ(390px)', qb.width, Math.min(Math.max(Math.floor(390 * .68), 220), 330));
-    eq('inventory: aspectRatio従来どおり', sc.startArgs.conf.aspectRatio, 1);
-    eq('inventory: fps従来どおり', sc.startArgs.conf.fps, 10);
+    check('inventory: QR・JAN共用の横長枠', typeof qb === 'function' && qb(356,633).width > qb(356,633).height);
+    eq('inventory: JAN改善設定のfps', sc.startArgs.conf.fps, 15);
     eq('inventory: environmentカメラ', sc.startArgs.cam.facingMode, 'environment');
     for (const w of [320, 375, 390, 414, 430]) {
       sc = await load({ search: '?purpose=jan_register&rid=' + UUID, innerWidth: w }).start();
@@ -708,7 +713,7 @@ async function main() {
       || (script.match(/(?:params|p)\.(?:get|has)\('([^']+)'\)/g) || []).every(s => /'(app|autostart|purpose|rid)'/.test(s)));
     check('postMessageのtargetOriginは*', /\},'\*'\)/.test(script) && (script.match(/postMessage\(/g) || []).length === 1);
     check('inventoryの既存validQr式が不変', script.includes("function validQr(value){return /^[A-Z0-9][A-Z0-9-]{4,79}$/.test(value)}"));
-    check('inventoryの既存destination式が不変', script.includes("function destination(qr){if(!appUrl)return '';return appUrl+(appUrl.includes('?')?'&':'?')+'qr='+encodeURIComponent(qr)+'&camera=1'}"));
+    check('inventoryのURL復路はJAN形式を保持', script.includes("const url=destination(qr,formatName)") && script.includes("'&format='+format"));
     check('location.replaceはinventory経路と戻る操作のみ', (script.match(/location\.replace\(/g) || []).length === 2);
     check('newlyのlocation.replaceにvalue/ridを付けない', !/location\.replace\([^)]*(rid|requestId|purpose|jan)/i.test(script));
     check('既存の完了・多重送信ガード', /if\(completed\)return;/.test(script) && /completed=true;/.test(script));

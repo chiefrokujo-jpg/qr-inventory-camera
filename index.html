@@ -40,7 +40,7 @@
     <div id="status" class="status">「カメラを起動する」を押してください。</div>
     <div id="result" class="result"></div>
     <a id="returnButton" class="button hidden" href="#">棚卸画面で商品を開く</a>
-    <p class="note">このページはQR読取だけを行います。商品情報、数量、スタッフ名、管理者パスワードは保存しません。</p>
+    <p class="note">このページはコード読取だけを行います。商品情報、数量、スタッフ名、管理者パスワードは保存しません。</p>
   </section>
 </main>
 <script>
@@ -52,7 +52,7 @@
      formats：許可する読取形式（html5-qrcodeのformatName）。
      ridはスタッフ画面が発行した依頼IDで、そのまま返すだけ（商品情報・セッション情報は受け取らない）。 */
   const PURPOSES = {
-    inventory:{formats:['QR_CODE'],needsRid:false,subtitle:'商品のQRコードを枠内に映してください',reading:'読み取り中です。QRコードを枠内に映してください。',done:'QRコードを読み取りました。'},
+    inventory:{formats:['QR_CODE','EAN_13','EAN_8'],needsRid:false,subtitle:'商品のQRコードまたはJANバーコードを枠内に映してください',reading:'読み取り中です。QRコードまたはJANバーコードを枠内に映してください。',done:'コードを読み取りました。'},
     product_select:{formats:['QR_CODE'],needsRid:true,subtitle:'登録先商品のQRコードを読み取ってください。',reading:'登録先商品のQRコードを読み取ってください。',done:'QRコードを読み取りました。'},
     jan_register:{formats:['EAN_13','EAN_8'],needsRid:true,subtitle:'商品のJANバーコードを横向きの枠に合わせてください。',reading:'商品のJANバーコードを横向きの枠に合わせてください。',done:'JANバーコードを読み取りました。'}
   };
@@ -90,7 +90,7 @@
 
   function status(text, type){statusBox.textContent=text;statusBox.className='status'+(type?' '+type:'')}
   function validQr(value){return /^[A-Z0-9][A-Z0-9-]{4,79}$/.test(value)}
-  function destination(qr){if(!appUrl)return '';return appUrl+(appUrl.includes('?')?'&':'?')+'qr='+encodeURIComponent(qr)+'&camera=1'}
+  function destination(qr,format){if(!appUrl)return '';return appUrl+(appUrl.includes('?')?'&':'?')+'qr='+encodeURIComponent(qr)+'&camera=1'+(format==='EAN_13'||format==='EAN_8'?'&format='+format:'')}
   /* このカメラ画面が名前付きターゲット（QR棚卸アプリ側の固定タブ名）で開かれている
      場合、ページ全体の再読込みを避けるため、まずwindow.openerへpostMessageでQR値
      だけを返す。読取ごとにscanIdを新規発行し、QR棚卸アプリ側で同じイベントの
@@ -220,7 +220,7 @@
     if(running||!config.ok)return; completed=false; resultBox.style.display='none'; returnButton.classList.add('hidden'); startButton.disabled=true; status('カメラを起動しています……');
     try{
       resetHelp();
-      if(isJan){
+      if(isJan||config.purpose==='inventory'){
         await startJan();
       }else{
         scanner=new Html5Qrcode('reader',{formatsToSupport:purposeDef.formats.map(function(name){return Html5QrcodeSupportedFormats[name]})});
@@ -269,7 +269,7 @@
       status('元の画面へ結果を返せませんでした。元の棚卸画面のタブへ戻り、もう一度読み取るか手入力してください。','bad');
       return;
     }
-    const url=destination(qr);
+    const url=destination(qr,formatName);
     /* 戻るリンク（手動フォールバック）は、新方式・従来方式のどちらの場合でも
        必ず表示しておく（postMessageが届かなかった場合等に利用者が自分で
        タップして戻れるようにするため）。 */
